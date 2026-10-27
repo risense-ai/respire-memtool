@@ -1,12 +1,16 @@
 //! memTools — rsrs 桌面快捷记忆小工具
 //!
 //! P0+P1：Tauri 2 壳 + 全局热键小窗 + 三层菜单 + 手动路径提交（client-only HTTP）
-//! 红线：不启停 rsrs 服务、不使用 --direct、不 shell 拼接调用 rsrs。
+//! 红线：不停止/重启 rsrs 服务、不使用 --direct、不 shell 拼接调用 rsrs。
+//! P11：允许通过 npm/pnpm 安装或升级 rsrs CLI 包（`rsrs_install`）。
+//! P12：开机自启时若 runtime 离线，调用 `rsrs status` 让 rsrs 自行拉起（不停止/重启）。
 
 pub mod config;
 pub mod rsrs_client;
+pub mod rsrs_install;
 
 pub mod agent;
+pub mod autostart;
 pub mod automation;
 pub mod graph;
 pub mod graph_vectors;
@@ -1896,6 +1900,122 @@ async fn update_install(
     .map_err(|e| format!("更新线程失败：{e}"))?
 }
 
+// ---------------------------------------------------------------------------
+// rsrs CLI 检测 / 安装 / 更新（P11）
+// ---------------------------------------------------------------------------
+
+/// 检测本机 rsrs 命令（PATH + npm/pnpm 常见全局目录），供首次启动与面板使用。
+#[tauri::command]
+async fn rsrs_cli_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<rsrs_install::CliStatus, String> {
+    let cfg = state.config.rsrs_cli.clone();
+    tauri::async_runtime::spawn_blocking(move || rsrs_install::status(&cfg))
+        .await
+        .map_err(|e| format!("检测 rsrs 失败：{e}"))
+}
+
+/// 查询 registry 最新版本（手动「检查更新」）。
+#[tauri::command]
+async fn rsrs_cli_check_update(
+    state: tauri::State<'_, AppState>,
+) -> Result<rsrs_install::UpdateCheck, String> {
+    let cfg = state.config.rsrs_cli.clone();
+    tauri::async_runtime::spawn_blocking(move || rsrs_install::check_latest(&cfg))
+        .await
+        .map_err(|e| format!("检查 rsrs 更新失败：{e}"))?
+}
+
+/// 首次启动检测不到 rsrs 时主动显示小窗，让自动安装进度可见（P11）。
+#[tauri::command]
+fn show_main_window(app: AppHandle) {
+    show_window(&app);
+}
+
+/// 安装或更新 rsrs CLI；进度通过 `rsrs://install` 事件推送。
+#[tauri::command]
+async fn rsrs_cli_install(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<rsrs_install::CliStatus, String> {
+    let cfg = state.config.rsrs_cli.clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || rsrs_install::install(&handle, &cfg))
+        .await
+        .map_err(|e| format!("rsrs 安装线程失败：{e}"))?
+}
+
+// ---------------------------------------------------------------------------
+// 开机自启（P12）
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct AutostartStatus {
+    enabled: bool,
+    message: String,
+}
+
+fn autostart_state(app: &AppHandle) -> AutostartStatus {
+    use tauri_plugin_autostart::ManagerExt;
+    match app.autolaunch().is_enabled() {
+        Ok(true) => AutostartStatus {
+            enabled: true,
+            message: "已开启：登录系统后自动启动 memTools，并检查 rsrs runtime".into(),
+        },
+        Ok(false) => AutostartStatus {
+            enabled: false,
+            message: "已关闭：登录系统时不会自动启动".into(),
+        },
+        Err(e) => AutostartStatus {
+            enabled: false,
+            message: format!("无法读取开机自启状态：{e}"),
+        },
+    }
+}
+
+/// 读取系统里的开机自启状态（Windows：HKCU Run 项）。
+#[tauri::command]
+fn autostart_status(app: AppHandle) -> AutostartStatus {
+    autostart_state(&app)
+}
+
+/// 开启/关闭开机自启；返回系统确认后的真实状态。
+#[tauri::command]
+fn autostart_set(app: AppHandle, enabled: bool) -> Result<AutostartStatus, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager
+            .enable()
+            .map_err(|e| format!("开启开机自启失败：{e}"))?;
+    } else {
+        manager
+            .disable()
+            .map_err(|e| format!("关闭开机自启失败：{e}"))?;
+    }
+    let status = autostart_state(&app);
+    if status.enabled != enabled {
+        return Err(format!(
+            "系统未接受开机自启设置（期望 {}，实际 {}）。\n可尝试以当前用户身份重新安装，或检查任务管理器的启动项。",
+            if enabled { "开启" } else { "关闭" },
+            if status.enabled { "开启" } else { "关闭" }
+        ));
+    }
+    Ok(status)
+}
+
+/// 手动检查 runtime，离线时让 rsrs 自行拉起（设置面板「立即检查」）。
+#[tauri::command]
+async fn runtime_ensure(
+    state: tauri::State<'_, AppState>,
+) -> Result<autostart::RuntimeEnsure, String> {
+    let client = state.client.clone();
+    let cfg = state.config.rsrs_cli.clone();
+    tauri::async_runtime::spawn_blocking(move || autostart::ensure_runtime(&client, &cfg))
+        .await
+        .map_err(|e| format!("rsrs runtime 检查线程失败：{e}"))
+}
+
 pub fn run() {
     let default_config = config::AppConfig::load();
 
@@ -1904,6 +2024,12 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_window(app);
         }))
+        // 开机自启（P12）：注册/取消由设置面板与安装包共同管理；
+        // 自启拉起时带 `--autostart`，setup 里据此检查 rsrs runtime。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![autostart::AUTOSTART_ARG]),
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -1937,6 +2063,35 @@ pub fn run() {
                 targets: target_store.clone(),
                 processor: processor_settings.clone(),
             });
+            // 开机自启（P12）：仅当本次由系统登录拉起时才检查 rsrs；
+            // 离线则调用 `rsrs status` 让 rsrs 自行拉起常驻 runtime。
+            // 放后台线程：首次拉起可能要加载模型，不能阻塞托盘/热键。
+            if autostart::launched_by_autostart() {
+                let boot_client = client.clone();
+                let cli_cfg = default_config.rsrs_cli.clone();
+                let handle = app.handle().clone();
+                let spawned = std::thread::Builder::new()
+                    .name("memtools-autostart".into())
+                    .spawn(move || {
+                        // 等系统登录后的磁盘/网络/托盘就绪
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let _ = handle.emit(
+                            autostart::EVENT,
+                            serde_json::json!({
+                                "stage": "checking",
+                                "online": false,
+                                "started": false,
+                                "message": "开机自启：检查 rsrs runtime…",
+                                "log": null,
+                            }),
+                        );
+                        let outcome = autostart::ensure_runtime(&boot_client, &cli_cfg);
+                        let _ = handle.emit(autostart::EVENT, &outcome);
+                    });
+                if let Err(e) = spawned {
+                    eprintln!("[memTools] 开机自启检查线程启动失败：{e}");
+                }
+            }
             // 分类树缓存预热：后台线程每 120s 刷新一次，让首次 /targets 通常直接命中缓存
             {
                 let warm_client = client.clone();
@@ -2103,7 +2258,14 @@ pub fn run() {
             graph_rebuild_layout,
             set_graph_window,
             update_check,
-            update_install
+            update_install,
+            rsrs_cli_status,
+            rsrs_cli_check_update,
+            rsrs_cli_install,
+            autostart_status,
+            autostart_set,
+            runtime_ensure,
+            show_main_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running memTools");

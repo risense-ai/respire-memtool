@@ -10,6 +10,8 @@ memTools 以 MIT 许可证发布。应用在构建和运行时会使用下列第
 | tauri-build（构建时） | MIT 或 Apache-2.0 | https://github.com/tauri-apps/tauri |
 | tauri-plugin-global-shortcut | MIT 或 Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
 | tauri-plugin-single-instance | MIT 或 Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
+| tauri-plugin-autostart | MIT 或 Apache-2.0 | https://github.com/tauri-apps/plugins-workspace |
+| auto-launch | MIT | https://github.com/zzzgydi/auto-launch |
 | serde | MIT 或 Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_json | MIT 或 Apache-2.0 | https://github.com/serde-rs/json |
 | ureq | MIT 或 Apache-2.0 | https://github.com/algesten/ureq |

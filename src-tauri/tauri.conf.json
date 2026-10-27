@@ -53,6 +53,11 @@
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "template": "./windows/installer.nsi"
+      }
+    }
   }
 }

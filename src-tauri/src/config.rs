@@ -23,6 +23,9 @@ pub struct AppConfig {
     /// 内容梳理 / 分析（P10 层次一：直接调 LLM）；旧配置文件缺该段时用默认值
     #[serde(default)]
     pub processor: ProcessorConfig,
+    /// rsrs CLI 自动安装 / 更新（P11）；旧配置文件缺该段时用默认值
+    #[serde(default)]
+    pub rsrs_cli: RsrsCliConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -201,6 +204,30 @@ impl Default for UpdateConfig {
                 "https://github.com/risense-ai/respire-memtool/releases/latest/download/update.json"
                     .into(),
             check_on_start: true,
+        }
+    }
+}
+
+/// rsrs CLI 自动安装 / 更新（P11）。
+///
+/// 只负责全局安装包（npm/pnpm），不启动、停止或重启 runtime，也不使用 `--direct`。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RsrsCliConfig {
+    /// 首次启动检测不到 `rsrs` 命令时自动安装
+    pub auto_install: bool,
+    /// 官方短名安装入口（同仓库、同 `rsrs` 命令）
+    pub package: String,
+    /// 短名在镜像上未同步时回退的旧包名
+    pub fallback_package: String,
+}
+
+impl Default for RsrsCliConfig {
+    fn default() -> Self {
+        Self {
+            auto_install: true,
+            package: "rsrs-cli".into(),
+            fallback_package: "@rsrsai/cli".into(),
         }
     }
 }
@@ -642,6 +669,7 @@ impl AppConfig {
             selection: SelectionConfig::default(),
             reminder: ReminderConfig::default(),
             processor: ProcessorConfig::default(),
+            rsrs_cli: RsrsCliConfig::default(),
         }
     }
 }

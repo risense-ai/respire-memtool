@@ -91,6 +91,23 @@ const updateBar = $("#update-bar");
 const updateBarFill = $("#update-bar-fill");
 const updateInstall = $("#update-install");
 const updateClose = $("#update-close");
+const rsrsBtn = $("#rsrs-btn");
+const rsrsPanel = $("#rsrs-panel");
+const rsrsTitle = $("#rsrs-title");
+const rsrsBody = $("#rsrs-body");
+const rsrsBar = $("#rsrs-bar");
+const rsrsBarFill = $("#rsrs-bar-fill");
+const rsrsLog = $("#rsrs-log");
+const rsrsCheck = $("#rsrs-check");
+const rsrsInstall = $("#rsrs-install");
+const rsrsClose = $("#rsrs-close");
+const settingsBtn = $("#settings-btn");
+const settingsPanel = $("#settings-panel");
+const settingsClose = $("#settings-close");
+const autostartSwitch = $("#autostart-switch");
+const autostartStatus = $("#autostart-status");
+const runtimeStart = $("#runtime-start");
+const runtimeCheckStatus = $("#runtime-check-status");
 const autoState = $("#auto-state");
 const hintWrap = $("#hint-wrap");
 const hintInput = $("#hint-input");
@@ -1925,6 +1942,9 @@ function initExtensionPanel() {
       extPort.textContent = info.enabled ? String(info.port) : "未启用";
       extToken.value = info.token || "";
       extToken.placeholder = info.token ? "" : "未生成：请重启 memTools";
+      closeRsrsPanel();
+      hideUpdatePop();
+      settingsPanel?.classList.add("hidden");
       extPanel.classList.remove("hidden");
     } catch (err) {
       setResult("err", "无法读取扩展信息", String(err?.message || err));
@@ -1974,6 +1994,311 @@ function initExtensionPanel() {
   });
 }
 
+// ---- rsrs 命令行：检测 / 首次自动安装 / 手动更新（P11）----
+// 只安装/升级 CLI 包；不停止/重启 runtime。开机自启时由 rsrs 自行拉起服务（P12）。
+let rsrsStatus = null;
+let rsrsBusy = false;
+
+function rsrsVersionLabel(st) {
+  if (!st?.installed) return "未安装";
+  return st.version ? `v${st.version}` : "已安装";
+}
+
+function openRsrsPanel() {
+  extPanel?.classList.add("hidden");
+  settingsPanel?.classList.add("hidden");
+  hideUpdatePop();
+  rsrsPanel?.classList.remove("hidden");
+}
+
+function closeRsrsPanel() {
+  rsrsPanel?.classList.add("hidden");
+}
+
+function describeRsrsStatus(st) {
+  if (!st) return "检测中…";
+  const lines = [];
+  if (st.installed) {
+    lines.push(`已安装 ${rsrsVersionLabel(st)}`);
+    if (st.bin) lines.push(`路径：${st.bin}`);
+  } else {
+    lines.push("未检测到 rsrs 命令。");
+    lines.push("memTools 只连接 rsrs runtime，需要先安装 rsrs CLI。");
+  }
+  if (st.can_install) {
+    lines.push(`包管理器：${st.package_manager || "npm"} · 安装包：${st.package}`);
+  } else {
+    lines.push("本机没有 npm / pnpm：请先安装 Node.js（https://nodejs.org）后重试。");
+  }
+  return lines.join("\n");
+}
+
+function renderRsrsStatus(st) {
+  rsrsStatus = st || null;
+  const label = rsrsVersionLabel(st);
+  rsrsBtn.textContent = st?.installed ? "rsrs" : "装 rsrs";
+  rsrsBtn.title = st?.installed
+    ? `rsrs ${label}${st.bin ? `\n${st.bin}` : ""}`
+    : "未检测到 rsrs：点击查看安装（首次启动会自动尝试）";
+  rsrsBtn.classList.toggle("warn", !st?.installed);
+  rsrsCheck.classList.toggle("hidden", !st?.installed);
+  rsrsInstall.classList.toggle("hidden", !st?.can_install);
+  rsrsInstall.textContent = st?.installed ? "更新到最新版" : "安装 rsrs";
+  rsrsInstall.disabled = false;
+  return st;
+}
+
+/// 安装/更新进度事件（Rust 端 `rsrs://install`）
+function onRsrsProgress(p) {
+  if (!p) return;
+  const pct = Math.max(0, Math.min(100, Number(p.progress) || 0));
+  rsrsBar.classList.remove("hidden");
+  rsrsBarFill.style.width = `${pct}%`;
+  rsrsTitle.textContent = p.done ? (p.ok ? "rsrs 已就绪" : "rsrs 安装失败") : `rsrs · ${p.stage}`;
+  const line = p.log ? `${p.message || ""}\n${p.log}` : p.message || "";
+  if (line) {
+    rsrsLog.textContent = line;
+    rsrsLog.classList.remove("hidden");
+  }
+}
+
+async function startRsrsInstall() {
+  if (!window.__TAURI__?.core || rsrsBusy) return;
+  const wasInstalled = !!rsrsStatus?.installed;
+  rsrsBusy = true;
+  rsrsBtn.classList.add("busy");
+  rsrsTitle.textContent = "rsrs · 安装中";
+  rsrsBody.textContent =
+    "正在用 npm / pnpm 全局安装 rsrs（需要联网）。\n此过程不会启动、停止或重启 rsrs runtime。";
+  rsrsBar.classList.remove("hidden");
+  rsrsBarFill.style.width = "0%";
+  rsrsLog.textContent = "准备…";
+  rsrsLog.classList.remove("hidden");
+  rsrsInstall.disabled = true;
+  rsrsCheck.disabled = true;
+  openRsrsPanel();
+  try {
+    const st = await invoke()("rsrs_cli_install");
+    renderRsrsStatus(st);
+    rsrsTitle.textContent = "rsrs 已就绪";
+    rsrsBody.textContent = [
+      `${wasInstalled ? "已更新到" : "已安装"} ${rsrsVersionLabel(st)}。`,
+      st.bin ? `路径：${st.bin}` : "",
+      wasInstalled
+        ? "运行中的 runtime 仍在使用旧二进制；重启宿主应用或 rsrs 服务后才会切换到新版本（memTools 不代为停止服务）。"
+        : "runtime 由 rsrs 或宿主应用启动；memTools 不会启动或停止服务。",
+      "若底栏 runtime 仍离线，请重启宿主应用或先执行一次 rsrs 命令。",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    rsrsBarFill.style.width = "100%";
+    rsrsLog.classList.add("hidden");
+  } catch (e) {
+    rsrsTitle.textContent = "rsrs 安装失败";
+    rsrsBody.textContent = String(e?.message || e);
+    rsrsBarFill.style.width = "100%";
+  } finally {
+    rsrsBusy = false;
+    rsrsBtn.classList.remove("busy");
+    rsrsInstall.disabled = false;
+    rsrsCheck.disabled = false;
+    rsrsInstall.textContent = rsrsStatus?.installed
+      ? "更新到最新版"
+      : "重试安装 rsrs";
+    rsrsInstall.classList.toggle("hidden", !rsrsStatus?.can_install);
+    rsrsCheck.classList.toggle("hidden", !rsrsStatus?.installed);
+    checkRuntime();
+  }
+}
+
+async function checkRsrsUpdate() {
+  if (!window.__TAURI__?.core || rsrsBusy) return;
+  rsrsCheck.disabled = true;
+  rsrsCheck.textContent = "检查中";
+  rsrsTitle.textContent = "rsrs · 检查更新";
+  try {
+    const r = await invoke()("rsrs_cli_check_update");
+    const installed = r.installed ? `v${r.installed}` : rsrsVersionLabel(rsrsStatus);
+    if (r.has_update) {
+      rsrsTitle.textContent = "发现 rsrs 新版本";
+      rsrsBody.textContent = `当前 ${installed} · 最新 v${r.latest}\n将使用 ${r.package_manager} 全局安装 ${r.package}`;
+      rsrsInstall.textContent = `更新到 v${r.latest}`;
+      rsrsInstall.classList.remove("hidden");
+    } else {
+      rsrsTitle.textContent = "rsrs 已是最新";
+      rsrsBody.textContent = `当前 ${installed} · registry 最新 v${r.latest}`;
+      rsrsInstall.textContent = "重新安装最新版";
+      rsrsInstall.classList.toggle("hidden", !rsrsStatus?.can_install);
+    }
+    rsrsBar.classList.add("hidden");
+    rsrsLog.classList.add("hidden");
+    openRsrsPanel();
+  } catch (e) {
+    rsrsTitle.textContent = "检查 rsrs 更新失败";
+    rsrsBody.textContent = String(e?.message || e);
+    openRsrsPanel();
+  } finally {
+    rsrsCheck.disabled = false;
+    rsrsCheck.textContent = "检查更新";
+  }
+}
+
+/// 启动时检测：未安装 → 打开面板并按配置自动安装；已安装 → 只更新底栏按钮。
+async function initRsrsCli() {
+  if (!window.__TAURI__?.core || !rsrsBtn) return;
+  try {
+    await listen()("rsrs://install", (ev) => onRsrsProgress(ev.payload));
+  } catch (_) {}
+
+  rsrsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!rsrsPanel.classList.contains("hidden")) {
+      closeRsrsPanel();
+      return;
+    }
+    if (rsrsStatus) rsrsBody.textContent = describeRsrsStatus(rsrsStatus);
+    openRsrsPanel();
+  });
+  rsrsClose?.addEventListener("click", closeRsrsPanel);
+  rsrsInstall?.addEventListener("click", startRsrsInstall);
+  rsrsCheck?.addEventListener("click", checkRsrsUpdate);
+  document.addEventListener("click", (e) => {
+    if (rsrsPanel.classList.contains("hidden")) return;
+    if (rsrsPanel.contains(e.target) || rsrsBtn.contains(e.target)) return;
+    closeRsrsPanel();
+  });
+
+  let st = null;
+  try {
+    st = renderRsrsStatus(await invoke()("rsrs_cli_status"));
+  } catch (e) {
+    rsrsBody.textContent = `无法检测 rsrs：${String(e?.message || e)}`;
+    return;
+  }
+  if (!st?.installed) {
+    rsrsBody.textContent = describeRsrsStatus(st);
+    openRsrsPanel();
+    if (st.auto_install && st.can_install) {
+      // 窗口默认隐藏：主动亮出小窗，让首次安装进度可见
+      try { await invoke()("show_main_window"); } catch (_) {}
+      await startRsrsInstall();
+    }
+  }
+}
+
+// ---- 设置：开机自启（P12）----
+// 自启状态以系统登记项为准（Windows：HKCU Run），不额外存配置。
+
+let autostartBusy = false;
+
+function setAutostartStatus(text, tone = "") {
+  if (!autostartStatus) return;
+  autostartStatus.textContent = text;
+  autostartStatus.className = "settings-status" + (tone ? ` ${tone}` : "");
+}
+
+function setRuntimeCheckStatus(text, tone = "") {
+  if (!runtimeCheckStatus) return;
+  runtimeCheckStatus.textContent = text;
+  runtimeCheckStatus.className = "settings-status" + (tone ? ` ${tone}` : "");
+}
+
+function closeSettingsPanel() {
+  settingsPanel?.classList.add("hidden");
+}
+
+function openSettingsPanel() {
+  if (!settingsPanel) return;
+  extPanel?.classList.add("hidden");
+  closeRsrsPanel();
+  hideUpdatePop();
+  settingsPanel.classList.remove("hidden");
+  // 每次打开都读系统真实状态（用户可能从任务管理器改过启动项）
+  void loadAutostartStatus();
+}
+
+async function loadAutostartStatus() {
+  if (!window.__TAURI__?.core) return;
+  try {
+    const st = await invoke()("autostart_status");
+    if (autostartSwitch) autostartSwitch.checked = !!st?.enabled;
+    setAutostartStatus(st?.message || "", st?.enabled ? "ok" : "");
+  } catch (e) {
+    if (autostartSwitch) autostartSwitch.checked = false;
+    setAutostartStatus(`无法读取开机自启状态：${String(e?.message || e)}`, "warn");
+  }
+}
+
+async function toggleAutostart(enabled) {
+  if (autostartBusy || !window.__TAURI__?.core) return;
+  autostartBusy = true;
+  if (autostartSwitch) autostartSwitch.disabled = true;
+  setAutostartStatus(enabled ? "正在开启…" : "正在关闭…");
+  try {
+    const st = await invoke()("autostart_set", { enabled });
+    if (autostartSwitch) autostartSwitch.checked = !!st?.enabled;
+    setAutostartStatus(st?.message || "", st?.enabled ? "ok" : "");
+  } catch (e) {
+    // 失败时以系统真实状态为准回滚开关
+    await loadAutostartStatus();
+    setAutostartStatus(String(e?.message || e), "warn");
+  } finally {
+    autostartBusy = false;
+    if (autostartSwitch) autostartSwitch.disabled = false;
+  }
+}
+
+async function ensureRuntimeNow() {
+  if (!window.__TAURI__?.core || !runtimeStart) return;
+  runtimeStart.disabled = true;
+  setRuntimeCheckStatus("正在检查 rsrs runtime；离线时会尝试启动…");
+  try {
+    const out = await invoke()("runtime_ensure");
+    setRuntimeCheckStatus(out?.message || "", out?.online ? "ok" : "warn");
+    checkRuntime();
+  } catch (e) {
+    setRuntimeCheckStatus(`检查失败：${String(e?.message || e)}`, "warn");
+  } finally {
+    runtimeStart.disabled = false;
+  }
+}
+
+async function initSettingsPanel() {
+  if (!window.__TAURI__?.core || !settingsBtn || !settingsPanel) return;
+  settingsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!settingsPanel.classList.contains("hidden")) {
+      closeSettingsPanel();
+      return;
+    }
+    openSettingsPanel();
+  });
+  settingsClose?.addEventListener("click", closeSettingsPanel);
+  autostartSwitch?.addEventListener("change", () => {
+    void toggleAutostart(!!autostartSwitch.checked);
+  });
+  runtimeStart?.addEventListener("click", ensureRuntimeNow);
+  document.addEventListener("click", (e) => {
+    if (settingsPanel.classList.contains("hidden")) return;
+    if (settingsPanel.contains(e.target) || settingsBtn.contains(e.target)) return;
+    closeSettingsPanel();
+  });
+
+  // 开机自启线程的进度/结果：更新面板文案与底栏 runtime 状态点
+  try {
+    await listen()("runtime://autostart", (ev) => {
+      const p = ev.payload || {};
+      const checking = p.stage === "checking";
+      const tone = checking ? "" : p.online ? "ok" : "warn";
+      const msg = checking
+        ? p.message || "开机自启：检查 rsrs runtime…"
+        : `开机自启：${p.message || (p.online ? "rsrs runtime 已在线" : "rsrs runtime 未就绪")}`;
+      setRuntimeCheckStatus(msg, tone);
+      checkRuntime();
+    });
+  } catch (_) {}
+}
+
 // ---- 自动更新 ----
 
 let updateInfo = null;
@@ -1991,6 +2316,9 @@ function fmtBytes(n) {
 }
 
 function showUpdatePop() {
+  closeRsrsPanel();
+  extPanel?.classList.add("hidden");
+  settingsPanel?.classList.add("hidden");
   updatePop.classList.remove("hidden");
 }
 
@@ -2084,6 +2412,10 @@ async function init() {
   initDrag();
   // 浏览器扩展接入面板（复制端口/令牌）
   initExtensionPanel();
+  // 设置面板：开机自启开关 + 开机自启的 runtime 检查结果
+  void initSettingsPanel();
+  // rsrs 命令行：首次启动检测不到 rsrs 时自动安装（进度显示在面板里，不阻塞 init）
+  void initRsrsCli();
 
   // 拉取配置
   try {
@@ -2451,5 +2783,7 @@ window.__memtools = {
   pollGraph,
   checkUpdate,
   installUpdate,
+  checkRsrsUpdate,
+  startRsrsInstall,
   runProcess,
 };

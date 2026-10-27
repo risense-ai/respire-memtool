@@ -271,6 +271,8 @@
         </span>
         <span class="switch-state" id="auto-state">手动</span>
       </label>
+      <button id="settings-btn" class="mini-btn settings-btn" title="设置：开机自启 / rsrs 启动检查">设置</button>
+      <button id="rsrs-btn" class="mini-btn rsrs-btn" title="rsrs 命令行：检测 / 安装 / 更新">rsrs</button>
       <button id="update-btn" class="mini-btn update-btn" title="检查更新">更新</button>
       <button id="ext-btn" class="mini-btn ext-btn" title="浏览器扩展接入信息">扩展</button>
       <span id="sync-badge" class="sync-badge hidden" title="rsrs 同步状态"></span>
@@ -296,6 +298,49 @@
       <div class="ext-hint" id="ext-install-hint">
         点击安装 / 配对，在 Chrome 开启开发者模式并加载已准备的目录。配对自动完成，无需复制令牌。
       </div>
+    </div>
+
+    <!-- rsrs 命令行面板：首次自动安装 / 手动检查更新，进度都显示在这里 -->
+    <div id="rsrs-panel" class="update-pop rsrs-panel hidden">
+      <div class="update-head">
+        <span id="rsrs-title">rsrs 命令行</span>
+        <button id="rsrs-close" class="mini-btn update-close" title="关闭">×</button>
+      </div>
+      <div class="update-body" id="rsrs-body">检测中…</div>
+      <div class="update-bar hidden" id="rsrs-bar"><i id="rsrs-bar-fill"></i></div>
+      <div class="rsrs-log hidden" id="rsrs-log"></div>
+      <div class="update-actions">
+        <button id="rsrs-check" class="mini-btn hidden">检查更新</button>
+        <button id="rsrs-install" class="mini-btn primary hidden">安装 rsrs</button>
+      </div>
+    </div>
+
+    <!-- 设置面板：开机自启 + rsrs runtime 检查 -->
+    <div id="settings-panel" class="update-pop settings-panel hidden">
+      <div class="update-head">
+        <span>设置</span>
+        <button id="settings-close" class="mini-btn update-close" title="关闭">×</button>
+      </div>
+      <div class="settings-row">
+        <div class="settings-row-text">
+          <span class="settings-label">开机自启</span>
+          <span class="settings-hint">登录系统后自动启动 memTools；若 rsrs 未运行，也会自动启动 rsrs。</span>
+        </div>
+        <label class="switch" title="开机自启">
+          <input type="checkbox" id="autostart-switch" />
+          <span class="knob"></span>
+        </label>
+      </div>
+      <div class="settings-status" id="autostart-status">读取中…</div>
+      <div class="settings-divider"></div>
+      <div class="settings-row">
+        <div class="settings-row-text">
+          <span class="settings-label">rsrs runtime</span>
+          <span class="settings-hint">开机自启时自动检查；离线时调用 rsrs 自行拉起服务。</span>
+        </div>
+        <button id="runtime-start" class="mini-btn">立即检查</button>
+      </div>
+      <div class="settings-status" id="runtime-check-status"></div>
     </div>
 
     <!-- 自动更新面板 -->

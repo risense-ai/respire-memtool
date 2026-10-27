@@ -1,8 +1,8 @@
 # memTools
 
-memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键唤起无边框小窗，把想法、事实、决策或日记写入本机 rsrs 记忆库，并提供最近记忆、语义搜索、到期提醒和 3D 记忆图谱。应用通过 MCP over HTTP（JSON-RPC 2.0）连接 rsrs runtime，不调用 CLI，也不会启动、停止或升级 rsrs。
+memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键唤起无边框小窗，把想法、事实、决策或日记写入本机 rsrs 记忆库，并提供最近记忆、语义搜索、到期提醒和 3D 记忆图谱。应用通过 MCP over HTTP（JSON-RPC 2.0）连接 rsrs runtime；首次启动检测不到 `rsrs` 命令时，会用 npm / pnpm 自动全局安装 rsrs CLI，并提供手动检查更新。它不会停止或重启 rsrs runtime。
 
-> **运行前提**：本机需已安装 rsrs，且其 runtime 正在 `http://127.0.0.1:15169` 监听。memTools 不管理 rsrs 进程；连接失败时界面显示 `runtime 不可达`。
+> **运行前提**：本机需已安装 rsrs，且其 runtime 正在 `http://127.0.0.1:15169` 监听。全新机器上 memTools 会自动安装 rsrs CLI（需要 Node.js / npm）；runtime 通常由 rsrs 自身或宿主应用启动。开启「开机自启」后，memTools 会在系统登录启动时检查 runtime，离线则调用 `rsrs status` 让 rsrs 自行拉起服务；连接失败时界面显示 `runtime 不可达`。
 
 ## 功能
 
@@ -22,6 +22,8 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 - **划词悬浮**（仅 Windows）：拖选或双击选词后先弹小图标，**此时不复制任何东西**；点图标才取词，可存为日记或带入主窗编辑。终端类窗口不注入取词，改为监听应用自身复制。过程中 `Ctrl+C` 的原有行为不受影响。
 - **同步状态**：底栏显示离线、待同步数量和冲突数量。
 - **自动更新**：从 GitHub Releases 读取清单，下载并校验 SHA-256 后在 Windows 上自替换重启。
+- **rsrs 命令行安装 / 更新**：首次启动检测 `rsrs` 命令，缺失时自动用 npm / pnpm 全局安装官方 CLI，安装与更新进度显示在底栏「rsrs」面板；也可在面板手动检查更新。
+- **开机自启**：Windows 安装包在目录选择后提供勾选页（默认不勾选，重装时沿用已有设置）；也可在底栏「设置」里随时开关。自启启动时若 rsrs runtime 离线，会调用 `rsrs status` 让 rsrs 自行拉起，并只在托盘常驻，不弹出小窗。
 
 ## 平台支持
 
@@ -31,10 +33,11 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 | 全局划词悬浮 | 支持 | 不支持（空实现，托盘项置灰） |
 | 自动更新检查 | 支持 | 支持 |
 | 自动更新下载与安装 | 支持 | 不支持（可检查，需手动下载安装包） |
+| 开机自启 | 支持（设置面板 + NSIS 安装勾选页） | 支持（设置面板；macOS LaunchAgent / Linux XDG） |
 
 ## 前置条件
 
-1. **rsrs 已安装并运行**：runtime 默认监听 `127.0.0.1:15169`。memTools 只作为客户端连接，不负责启动或停止服务。
+1. **rsrs 已安装并运行**：runtime 默认监听 `127.0.0.1:15169`。memTools 首次启动会检测 `rsrs` 命令：未安装时自动通过 npm / pnpm 全局安装（需要 Node.js），不会停止或重启 runtime。仅当开启「开机自启」并由系统登录拉起时，若 runtime 离线，memTools 会调用 `rsrs status` 让 rsrs 自行启动服务。
 2. **语义索引就绪**：`rsrs status --json` 中的 `retrieval_index.state` 为 `ready` 时，语义搜索、自动化判重和图谱向量才可用。未就绪时界面显示琥珀色“索引未就绪”徽标。
 3. **多账号**：memTools 连接当前在 15169 端口监听的账号 runtime。需要切换账号时，修改 `[rsrs] base_url` 指向对应端口。
 4. **鉴权（可选）**：若 rsrs runtime 要求令牌，在 `[rsrs] auth_token` 填写，或设置环境变量 `RSRS_TOKEN` / `RSRS_AUTH_TOKEN`（环境变量优先）。
@@ -46,13 +49,22 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 - `memtools-<版本>.exe`：免安装独立可执行文件；
 - `.msi` / `.exe`（NSIS）：Windows 安装包。
 
+NSIS 安装在「选择安装目录」之后有一页「开机自启」，默认不勾选；若检测到已有启动项则预选。勾选后写入当前用户启动项：
+
+```
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
+  = "<安装目录>\memtools.exe" --autostart
+```
+
+静默安装（`/S`）、被动安装（`/P`）和自动更新（`/UPDATE`）会跳过该页，不覆盖用户已有选择。MSI 没有自定义勾选页，安装后可在底栏「设置」中开启；卸载时会删除该启动项。
+
 首次启动时，如果可执行文件旁和用户配置目录都没有 `config.toml`，应用会把内置模板写入用户配置目录。之后可编辑该文件调整热键、端口、自动化等行为。
 
 发布包未做商业代码签名：Windows 可能提示“未知发布者”，macOS 需在“系统设置 → 隐私与安全性”中允许打开。macOS 构建为 Apple Silicon（arm64）版本。
 
 ## 快速上手
 
-1. 确认 rsrs runtime 已启动，再运行 memTools。
+1. 首次启动会检测 rsrs 命令：缺失时自动安装（底栏「rsrs」面板显示进度）。确认 rsrs runtime 已启动后再使用记录功能。
 2. 按 `Ctrl+Alt+R` 唤起小窗。
 3. 输入内容，或切换到“三段模板”分别填写【前因】【行为】【后果】。
 4. 选择“主区”或“日记”；主区再选择分类树和可选 type。
@@ -116,6 +128,18 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 | `rsrs.tools.list` | `memory_list` | 列出最近条目 |
 | `rsrs.tools.query_log_mark` | `memory_query_log_mark` | 标记召回候选的采纳情况 |
 
+### rsrs CLI 安装与更新
+
+底栏「rsrs」面板负责检测与安装命令行；只安装/升级包，不停止或重启 runtime。runtime 仅在开机自启检查或设置面板「立即检查」时由 `rsrs status` 自行拉起。
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `rsrs_cli.auto_install` | `true` | 首次启动检测不到 `rsrs` 命令时自动全局安装 |
+| `rsrs_cli.package` | `rsrs-cli` | 官方短名安装入口（与 `@rsrsai/cli` 同仓库同命令，勿同时安装） |
+| `rsrs_cli.fallback_package` | `@rsrsai/cli` | 短名在镜像上未同步时回退使用 |
+
+安装与更新都调用 `npm install -g --no-fund --no-audit <package>@latest`（无 npm 时用 pnpm），进度通过 `rsrs://install` 事件显示在面板中。升级 CLI 后，正在运行的 runtime 仍使用旧二进制，需由宿主应用或 rsrs 自身在下次启动时切换；memTools 不会代为停止服务。
+
 ### 自动化
 
 | 键 | 默认值 | 说明 |
@@ -178,6 +202,16 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 | `selection.offset_px` | `14` | 图标相对光标的偏移 |
 | `selection.clipboard_arm_ms` | `1200` | 拖选后多久内的复制算本次划词（剪贴板归因窗口） |
 | `selection.no_inject_processes` | 见 `config.toml` | 不注入取词的进程名黑名单（内嵌终端的宿主只能按进程名区分） |
+
+## rsrs 未安装或安装失败怎么办
+
+首次启动时若底栏「rsrs」按钮显示为琥珀色「装 rsrs」，说明没有检测到 `rsrs` 命令，应用已尝试自动安装并会把进度显示在同一面板。处理顺序：
+
+1. **确认 Node.js**：自动安装需要 npm 或 pnpm。没有 Node.js 时面板会明确提示，请先安装 Node.js（https://nodejs.org）再点「重试安装 rsrs」。
+2. **手动重试**：点底栏「rsrs」→「重试安装 rsrs」；已安装但想升级时点「检查更新」→「更新到 vX.Y.Z」。
+3. **网络 / 镜像**：安装走全局 npm registry；代理或镜像异常时，面板会显示 npm 的最后一行错误。也可在终端手动执行 `npm i -g rsrs-cli`。
+4. **命令找不到**：安装成功后仍提示未检测到，请确认 npm 全局 bin 目录在 PATH 中，并重启 memTools。
+5. **runtime 仍离线**：安装 CLI 不等于启动服务。runtime 通常由 rsrs 或宿主应用启动；请重启宿主应用，或在底栏「设置」点「立即检查」、开启「开机自启」让 memTools 调用 `rsrs status` 自行拉起。memTools 不会停止或重启 runtime。
 
 ## 索引未就绪怎么办
 
@@ -254,6 +288,8 @@ npm run tauri build -- --no-bundle
 
 产物位于 `src-tauri/target/release/memtools.exe`。不要直接用 `cargo build --release`：缺少 Tauri 的 `custom-protocol` 特性时，得到的程序仍会尝试加载开发服务器地址。
 
+Windows 安装器的 NSIS 模板是 `src-tauri/windows/installer.nsi`，基于 Tauri CLI 2.12.3 的上游模板，仅增加「开机自启」页与对应注册表写入。升级 `@tauri-apps/cli` 时，需对照同版本上游 `installer.nsi` 同步其余部分；模板由 `tauri.conf.json` 的 `bundle.windows.nsis.template` 指定。
+
 ## 浏览与搜索回归
 
 运行 `node --test devtools/memory-browser.test.mjs` 和 `npm test`。浏览器回归使用合成数据，不调用真实 Runtime：先运行 `node devtools/ui-preview.mjs`，再使用 Playwright CLI 打开预览并执行 `devtools/ui-check.mjs`、`devtools/ui-races.mjs`。默认预览地址为 http://127.0.0.1:1421；截图写入 `output/playwright/`，不应提交。
@@ -266,6 +302,7 @@ npm run tauri build -- --no-bundle
 - runtime 不可达时不展示图谱，也不会猜测其他账号的数据库位置。
 - 全局划词悬浮仅支持 Windows。终端类窗口（Windows Terminal、conhost、mintty、wezterm、alacritty、PuTTY）与 `no_inject_processes` 里的进程不会自动取词：它们只在应用自身把选区复制进剪贴板后弹图标，所以 Windows Terminal 默认关闭“选中即复制”时，需要用户自己按一次复制键。VS Code 等内嵌终端的宿主窗口类与编辑器相同，只能按进程名排除。
 - 自动更新的下载与安装仅支持 Windows，其他平台需手动下载。
+- 开机自启的安装器勾选页仅 NSIS 提供；MSI、静默（`/S`）、被动（`/P`）和更新安装不会写启动项，可在安装后从底栏「设置」开启。
 - 没有账号切换器；切换账号需要调整 `rsrs.base_url` 或让目标账号占用同一端口。
 - 发布包未签名；macOS 构建仅覆盖 arm64。
 

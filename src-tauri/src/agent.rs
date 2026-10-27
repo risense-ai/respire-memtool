@@ -360,8 +360,9 @@ fn hint_for(kind: Kind) -> &'static str {
     }
 }
 
-/// PATH 查找（Windows 按可执行扩展名优先，避免命中同名的 bash/ps1 脚本）
-fn which(name: &str) -> Option<PathBuf> {
+/// PATH 查找（Windows 按可执行扩展名优先，避免命中同名的 bash/ps1 脚本）。
+/// 同时供 `rsrs_install` 检测 npm/pnpm/rsrs 命令复用。
+pub(crate) fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     // 只接受 CreateProcess 真能执行的扩展名（.ps1 / .sh / 无扩展名都会报 os error 193）
     let exts: [&str; 4] = [".com", ".exe", ".bat", ".cmd"];
