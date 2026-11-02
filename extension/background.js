@@ -10,6 +10,8 @@ const MENU_EDIT = "memtools:edit";
 const MENU_OPEN = "memtools:open";
 const MENU_SEP = "memtools:sep";
 const MENU_PROCESS = "memtools:process";
+const MENU_KB_TEXT = "memtools:kb-text";
+const MENU_KB_PAGE = "memtools:kb-page";
 const MENU_TARGET_PREFIX = "memtools:target:";
 
 // 降级列表：memTools 不可达且本地无缓存时使用（权威数据在 memTools 侧）
@@ -68,6 +70,17 @@ function buildMenus(targets) {
         parentId: MENU_ROOT,
         title: "梳理后保存（AI 总结）",
         contexts: ["selection"],
+      });
+      createMenu({
+        id: MENU_KB_TEXT,
+        parentId: MENU_ROOT,
+        title: "AI 调研这段并存入知识库",
+        contexts: ["selection"],
+      });
+      createMenu({
+        id: MENU_KB_PAGE,
+        title: "AI 解析此页并存知识库",
+        contexts: ["page", "link"],
       });
       createMenu({
         id: MENU_EDIT,
@@ -376,8 +389,74 @@ async function openMemTools({ text, url, pageTitle } = {}) {
   }
 }
 
+// 知识库入口（P13）：把网页或选中文字交给 memTools 的 AI 窗口整理
+async function kbAdd(payload) {
+  const { port, token } = await getSettings();
+  if (!token) {
+    notify("memTools 未配置令牌", "请打开扩展选项，粘贴 extension_token.txt 的内容。");
+    chrome.runtime.openOptionsPage();
+    return;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  const keepAlive = setInterval(
+    () => chrome.runtime.getPlatformInfo(() => {}),
+    20000,
+  );
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/kb/add`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-MemTools-Token": token,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 401) {
+      notify("memTools 令牌无效", "请重新复制 extension_token.txt 到扩展选项。");
+      return;
+    }
+    if (!resp.ok || data.ok === false) {
+      notify("memTools 入库失败", data.message || `HTTP ${resp.status}`);
+      return;
+    }
+    notify("已加入知识库队列", "memTools 的 AI 窗口会显示整理进度。");
+  } catch (e) {
+    const msg =
+      e?.name === "AbortError"
+        ? "请求超时：请确认 memTools 正在运行。"
+        : `无法连接 memTools（127.0.0.1:${port}）：请确认应用正在运行。`;
+    notify("memTools 不可达", msg);
+  } finally {
+    clearTimeout(timer);
+    clearInterval(keepAlive);
+  }
+}
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const menuId = String(info.menuItemId || "");
+
+  if (menuId === MENU_KB_TEXT) {
+    const text = await readSelection(tab?.id, info.selectionText);
+    if (!text) {
+      notify("没有取到选中文字", "请先选中一段文字再右键。");
+      return;
+    }
+    await kbAdd({ kind: "text", text, source: tab?.title || "" });
+    return;
+  }
+
+  if (menuId === MENU_KB_PAGE) {
+    const url = info.linkUrl || tab?.url || "";
+    if (!url || !/^https?:/i.test(url)) {
+      notify("这个页面不能解析", "只支持 http/https 网页。");
+      return;
+    }
+    await kbAdd({ kind: "url", url, source: tab?.title || "" });
+    return;
+  }
 
   if (menuId === MENU_OPEN) {
     await openMemTools({});

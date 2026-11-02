@@ -1,6 +1,6 @@
 [package]
 name = "memtools"
-version = "0.5.6"
+version = "0.6.0"
 description = "memTools - rsrs 桌面快捷记忆小工具"
 authors = ["memTools"]
 edition = "2021"
@@ -45,6 +45,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
 ] }
 # 只取文本，不启用图像剪贴板特性（体积更小）
 arboard = { version = "3", default-features = false }

@@ -24,12 +24,17 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 - **自动更新**：从 GitHub Releases 读取清单，下载并校验 SHA-256 后在 Windows 上自替换重启。
 - **rsrs 命令行安装 / 更新**：首次启动检测 `rsrs` 命令，缺失时自动用 npm / pnpm 全局安装官方 CLI，安装与更新进度显示在底栏「rsrs」面板；也可在面板手动检查更新。更新后会回查 registry 显示「已是最新」，运行中的 runtime 仍是旧二进制时，可在面板点「重启 rsrs」→「确认重启」由 memTools 代为重启。
 - **开机自启**：Windows 安装包在目录选择后提供勾选页（默认不勾选，重装时沿用已有设置）；也可在底栏「设置」里随时开关。自启启动时若 rsrs runtime 离线，会调用 `rsrs status` 让 rsrs 自行拉起，并只在托盘常驻，不弹出小窗。
+- **AI 窗口与知识库**（P13）：独立窗口（顶部「AI」按钮打开，也可用 `memtools.exe --ai` 直接唤起；点 × 只隐藏，不销毁），既能和本机 agent（opencode）对话，也能把文件、文件夹、网页或选中文字交给它整理进知识库。一条资料一个文件夹：`<知识库根目录>/<年>/<月>/<主题>-<时间戳>/{original, <标题>.md}`，原文件与 Markdown 放在一起，便于统一管理；整理完成后由 agent 按 rsrs 的「改 / 并 / 挂 / 存」规范写入记忆，并把文件路径与设备写进正文。
+- **右键添加到知识库**（仅 Windows）：在资源管理器里右键文件、文件夹或文件夹空白处 →「添加到 memTools 知识库」，路径经单实例转发到已运行的 memTools，AI 窗口随即开工。Windows 11 的经典右键项会被折叠进「显示更多选项」（Shift+F10）。
+- **划词 / 网页入口**：划词面板新增「AI 调研」；浏览器扩展右键新增「AI 调研这段并存入知识库」与「AI 解析此页并存知识库」，两者都通过本机端点 `POST /kb/add` 入队。
 
 ## 平台支持
 
 | 能力 | Windows | macOS / Linux |
 | --- | --- | --- |
 | 记录、判重、自动化、最近记忆、搜索、提醒、图谱、托盘、热键 | 支持 | 支持 |
+| AI 窗口、知识库入库、划词 / 扩展调研入口 | 支持 | 支持（目录选择框仅 Windows 有原生实现，其他平台需手填路径） |
+| 资源管理器右键「添加到知识库」 | 支持 | 不支持 |
 | 全局划词悬浮 | 支持 | 不支持（空实现，托盘项置灰） |
 | 自动更新检查 | 支持 | 支持 |
 | 自动更新下载与安装 | 支持 | 不支持（可检查，需手动下载安装包） |
@@ -162,6 +167,23 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 | `automation.llm.timeout_secs` | `60` | 模型请求超时（秒） |
 
 调用失败或未配置时，自动回退本地判档和判树，并在结果中显示告警，不会静默降级。
+
+### 知识库与 AI 窗口
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `knowledge_base.enabled` | `true` | 关闭后 `/kb/add` 与入库入口直接拒绝 |
+| `knowledge_base.root` | 空 | 知识库根目录；空表示未设置，首次使用在 AI 窗口里选 |
+| `knowledge_base.max_file_mb` | `20` | 单文件上限（MB），超限直接拒绝 |
+| `knowledge_base.max_files` | `50` | 单次入库文件数上限（目录递归后计数） |
+| `knowledge_base.timeout_secs` | `600` | 单次 agent 调用超时；大目录整理更慢 |
+| `knowledge_base.context_menu` | `true` | Windows 下注册资源管理器右键菜单 |
+| `knowledge_base.agent_model` | 空 | 知识库专用模型（`provider/model`）；空则跟随 `processor.agent.model` |
+| `knowledge_base.research_websearch` | `true` | 调研类任务是否允许联网检索 |
+
+界面里选的根目录与右键菜单开关保存在 `{app_config_dir}/knowledge_base.json`，叠加在 `config.toml` 之上，改完立即生效。
+
+每个入库任务在 `{app_config_dir}/agent-workspace/` 下运行：独立的 `opencode.json`（默认全禁，只放开读资料、写知识库、`rsrs` 命令与技能加载）、`AGENTS.md` 与两个技能（`kb-ingest`、`kb-research`），不碰用户自己的 `opencode.jsonc`。
 
 ### 提醒
 
@@ -304,6 +326,9 @@ Windows 安装器的 NSIS 模板是 `src-tauri/windows/installer.nsi`，基于 T
 - 自动更新的下载与安装仅支持 Windows，其他平台需手动下载。
 - 开机自启的安装器勾选页仅 NSIS 提供；MSI、静默（`/S`）、被动（`/P`）和更新安装不会写启动项，可在安装后从底栏「设置」开启。
 - 没有账号切换器；切换账号需要调整 `rsrs.base_url` 或让目标账号占用同一端口。
+- 知识库入库目前只解析文本类格式（md / txt / csv / json / 日志 / 代码等）；PDF、Word、Excel、图片、压缩包只登记文件名与大小，不会解析内容，后续版本再加转换。
+- 知识库入库依赖本机 `opencode` 与可用模型；首次使用前请在 AI 窗口确认「就绪」状态，模型不可用时会明确报错，不会静默落空文档。
+- 右键菜单写 `HKCU`（免管理员）。Windows 11 把经典菜单项折叠进「显示更多选项」，需要按 Shift+F10 或点「显示更多选项」；不做 MSIX 打包无法进入一级菜单。
 - 发布包未签名；macOS 构建仅覆盖 arm64。
 
 ## 许可证

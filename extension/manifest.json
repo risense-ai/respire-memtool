@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "memTools 记忆捕获",
-  "version": "0.2.0",
-  "description": "把网页选中文字保存到本机 memTools（rsrs 记忆库）",
+  "version": "0.3.0",
+  "description": "把网页选中文字保存到本机 memTools（rsrs 记忆库），并可把整页或选中内容交给 AI 解析进知识库",
   "permissions": [
     "contextMenus",
     "notifications",

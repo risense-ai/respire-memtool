@@ -20,6 +20,7 @@ export default defineConfig({
       input: {
         main: "index.html",
         selection: "selection.html",
+        ai: "ai.html",
       },
     },
   },

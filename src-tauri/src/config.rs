@@ -26,6 +26,9 @@ pub struct AppConfig {
     /// rsrs CLI 自动安装 / 更新（P11）；旧配置文件缺该段时用默认值
     #[serde(default)]
     pub rsrs_cli: RsrsCliConfig,
+    /// 知识库入库 + AI 窗口（P13）；旧配置文件缺该段时用默认值
+    #[serde(default)]
+    pub knowledge_base: KnowledgeBaseConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -232,10 +235,71 @@ impl Default for RsrsCliConfig {
     }
 }
 
+/// 知识库入库 + AI 窗口（P13）。
+///
+/// 一条资料一个文件夹：`<root>/<年>/<月>/<主题>-<时间戳>/{original, <标题>.md}`。
+/// 这里是 `config.toml` 侧的默认值与硬限制；界面选择叠加在
+/// `{app_config_dir}/knowledge_base.json` 之上（见 `kb_settings`）。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct SelectionConfig {
+pub struct KnowledgeBaseConfig {
     pub enabled: bool,
+    /// 知识库根目录；空 = 未设置
+    pub root: String,
+    /// 单个文件上限（MB）
+    pub max_file_mb: u64,
+    /// 单次入库文件数上限
+    pub max_files: usize,
+    /// 单次 agent 调用超时（秒）
+    pub timeout_secs: u64,
+    /// Windows 资源管理器右键菜单
+    pub context_menu: bool,
+    /// opencode 模型；空 = 跟随 `[processor.agent] model`
+    pub agent_model: String,
+    /// 研究类任务允许联网检索
+    pub research_websearch: bool,
+}
+
+impl Default for KnowledgeBaseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            root: String::new(),
+            max_file_mb: 20,
+            max_files: 50,
+            timeout_secs: 600,
+            context_menu: true,
+            agent_model: String::new(),
+            research_websearch: true,
+        }
+    }
+}
+
+impl KnowledgeBaseConfig {
+    /// 根目录是否已配置（只判空，不判存在）
+    pub fn root_configured(&self) -> bool {
+        !self.root.trim().is_empty()
+    }
+
+    /// 实际使用的模型：知识库专用优先，其次跟随梳理 agent
+    pub fn effective_model(&self, agent_model: &str) -> String {
+        let own = self.agent_model.trim();
+        if own.is_empty() {
+            agent_model.trim().to_string()
+        } else {
+            own.to_string()
+        }
+    }
+
+    /// 文件上限（字节）；0 视为不限制
+    pub fn max_file_bytes(&self) -> u64 {
+        self.max_file_mb.saturating_mul(1024 * 1024)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SelectionConfig {    pub enabled: bool,
     pub min_chars: usize,
     pub max_chars: usize,
     pub drag_threshold_px: i32,
@@ -405,8 +469,8 @@ pub struct AgentConfig {
     pub timeout_secs: u64,
     /// 工作目录；留空用 `{temp}/memtools-agent`，避免污染当前项目与会话历史
     pub workdir: String,
-    /// 是否 `--pure`（opencode：跳过外部插件，防止 hook 拖慢/额外写记忆）
-    pub pure: bool,
+    /// 是否 `--auto`（opencode v2：自动批准未被显式拒绝的权限项）
+    pub auto: bool,
     /// qoder 的 `--max-turns`（0 = 不传）
     pub max_turns: u32,
     /// qoder 的 `--allowed-tools`（逗号分隔；留空不传）
@@ -431,7 +495,7 @@ impl Default for AgentConfig {
             agent: String::new(),
             timeout_secs: 240,
             workdir: String::new(),
-            pure: true,
+            auto: false,
             max_turns: 0,
             allowed_tools: String::new(),
             disallowed_tools: String::new(),
@@ -670,6 +734,7 @@ impl AppConfig {
             reminder: ReminderConfig::default(),
             processor: ProcessorConfig::default(),
             rsrs_cli: RsrsCliConfig::default(),
+            knowledge_base: KnowledgeBaseConfig::default(),
         }
     }
 }

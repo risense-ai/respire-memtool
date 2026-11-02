@@ -948,6 +948,12 @@ Section Uninstall
     DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
   ${EndIf}
 
+  ; 移除资源管理器右键菜单（P13：添加到 memTools 知识库）
+  ; 只写 HKCU，不涉及其他用户；更新时也一并清掉，安装后由应用按设置重新写入。
+  DeleteRegKey HKCU "Software\Classes\*\shell\memToolsKb"
+  DeleteRegKey HKCU "Software\Classes\Directory\shell\memToolsKb"
+  DeleteRegKey HKCU "Software\Classes\Directory\Background\shell\memToolsKb"
+
   ; Delete app data if the checkbox is selected
   ; and if not updating
   ${If} $DeleteAppDataCheckboxState = 1

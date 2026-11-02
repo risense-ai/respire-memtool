@@ -31,6 +31,8 @@ use tauri::AppHandle;
 
 use crate::automation::{self, CandidateOut};
 use crate::config::AppConfig;
+use crate::kb::IngestRequest;
+use crate::kb_service::KbService;
 use crate::processor::{self, Task};
 use crate::processor_settings::ProcessorSettings;
 use crate::quick::{self, QuickOutcome};
@@ -57,15 +59,38 @@ struct Ctx<'a> {
     backup_dir: &'a Path,
     /// 唤醒主窗的回调（无界面模式为 None，此时 `/open` 不可用）
     open_main: Option<&'a OpenMain>,
+    /// 打开 AI / 知识库窗口（`/kb/add` 用；无界面模式为 None）
+    open_ai: Option<&'a OpenAi>,
     targets: &'a Mutex<TargetStore>,
+    /// 知识库服务（无界面模式为 None，此时 `/kb/add` 返回 503）
+    kb: Option<&'a Arc<KbService>>,
 }
 
 /// 唤醒主窗并预填正文的回调（由调用方注入，端点本身不依赖 tauri 窗口）
 type OpenMain = Box<dyn Fn(Option<&str>) + Send + 'static>;
+/// 打开 AI 窗口的回调
+type OpenAi = Box<dyn Fn() + Send + 'static>;
+
+/// `POST /kb/add`：网页 / 划词送来的知识库请求
+#[derive(Debug, Default, Deserialize)]
+struct KbAddIn {
+    /// file | folder | url | text；留空自动判断
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    source: String,
+}
 
 #[derive(Debug, Deserialize)]
-struct RememberIn {
-    text: String,
+struct RememberIn {    text: String,
     #[serde(default)]
     title: Option<String>,
     /// journal | auto（默认 auto）
@@ -205,16 +230,22 @@ pub fn start(
     targets: Arc<Mutex<TargetStore>>,
     client: Arc<RsrsClient>,
     processor: Arc<ProcessorSettings>,
+    kb: Arc<KbService>,
 ) -> Result<Started, String> {
-    let open_main: OpenMain = Box::new(move |text| crate::open_main_window(&app, text));
+    let main_handle = app.clone();
+    let open_main: OpenMain = Box::new(move |text| crate::open_main_window(&main_handle, text));
+    let ai_handle = app.clone();
+    let open_ai: OpenAi = Box::new(move || crate::show_ai_window(&ai_handle));
     spawn_server(
         cfg,
         token_path,
         backup_dir,
         Some(open_main),
+        Some(open_ai),
         targets,
         Some(client),
         processor,
+        Some(kb),
     )
 }
 
@@ -228,7 +259,9 @@ pub fn start_without_window(
     targets: Arc<Mutex<TargetStore>>,
     processor: Arc<ProcessorSettings>,
 ) -> Result<Started, String> {
-    spawn_server(cfg, token_path, backup_dir, None, targets, None, processor)
+    spawn_server(
+        cfg, token_path, backup_dir, None, None, targets, None, processor, None,
+    )
 }
 
 fn spawn_server(
@@ -236,9 +269,11 @@ fn spawn_server(
     token_path: PathBuf,
     backup_dir: PathBuf,
     open_main: Option<OpenMain>,
+    open_ai: Option<OpenAi>,
     targets: Arc<Mutex<TargetStore>>,
     client: Option<Arc<RsrsClient>>,
     processor: Arc<ProcessorSettings>,
+    kb: Option<Arc<KbService>>,
 ) -> Result<Started, String> {
     if !cfg.extension.enabled {
         return Err("浏览器扩展端点未启用".into());
@@ -272,7 +307,9 @@ fn spawn_server(
                 token: &thread_token,
                 backup_dir: &backup_dir,
                 open_main: open_main.as_ref(),
+                open_ai: open_ai.as_ref(),
                 targets: &targets,
+                kb: kb.as_ref(),
             };
             handle(request, &ctx);
         }
@@ -326,8 +363,47 @@ fn splitmix64(mut x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn handle(mut req: Request, ctx: &Ctx<'_>) {
-    let method = req.method().clone();
+/// `/kb/add` 入参 → 统一入库请求（显式 kind 优先，其次按非空字段判断）
+fn build_kb_request(input: KbAddIn) -> IngestRequest {
+    let text = input.text.trim().to_string();
+    let url = input.url.trim().to_string();
+    let path = input.path.trim().to_string();
+    let explicit = input.kind.trim().to_lowercase();
+    let (kind, value) = if !explicit.is_empty() {
+        let value = match explicit.as_str() {
+            "text" => text.clone(),
+            "url" => {
+                if url.is_empty() {
+                    text.clone()
+                } else {
+                    url.clone()
+                }
+            }
+            _ => {
+                if path.is_empty() {
+                    url.clone()
+                } else {
+                    path.clone()
+                }
+            }
+        };
+        (explicit, value)
+    } else if !text.is_empty() {
+        ("text".to_string(), text)
+    } else if !url.is_empty() {
+        ("url".to_string(), url)
+    } else {
+        (String::new(), path)
+    };
+    IngestRequest {
+        kind,
+        value,
+        title: input.title.trim().to_string(),
+        source: input.source.trim().to_string(),
+    }
+}
+
+fn handle(mut req: Request, ctx: &Ctx<'_>) {    let method = req.method().clone();
     let path = req.url().split('?').next().unwrap_or("").to_string();
 
     if method == Method::Options {
@@ -591,6 +667,83 @@ fn handle(mut req: Request, ctx: &Ctx<'_>) {
                 "bin": bin,
                 "version": version,
                 "message": message,
+            });
+            respond(req, 200, &body.to_string());
+        }
+        (Method::Post, "/kb/add") => {
+            let body = match read_body(&mut req) {
+                Ok(b) => b,
+                Err(msg) => {
+                    respond(
+                        req,
+                        413,
+                        &serde_json::to_string(&ApiResponse::fail(msg)).unwrap_or_default(),
+                    );
+                    return;
+                }
+            };
+            let input: KbAddIn = match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    respond(
+                        req,
+                        400,
+                        &serde_json::to_string(&ApiResponse::fail(format!("请求 JSON 无效：{e}")))
+                            .unwrap_or_default(),
+                    );
+                    return;
+                }
+            };
+            let Some(kb) = ctx.kb else {
+                respond(
+                    req,
+                    503,
+                    &serde_json::to_string(&ApiResponse::fail("知识库服务不可用（无界面模式）"))
+                        .unwrap_or_default(),
+                );
+                return;
+            };
+            let req_model = build_kb_request(input);
+            match kb.submit(req_model) {
+                Ok(task) => {
+                    if let Some(open_ai) = ctx.open_ai {
+                        open_ai();
+                    }
+                    let body = serde_json::json!({
+                        "ok": true,
+                        "id": task.id,
+                        "kind": task.kind,
+                        "message": "已加入知识库队列，AI 窗口会显示进度",
+                    });
+                    respond(req, 200, &body.to_string());
+                }
+                Err(e) => {
+                    respond(
+                        req,
+                        409,
+                        &serde_json::to_string(&ApiResponse::fail(e)).unwrap_or_default(),
+                    );
+                }
+            }
+        }
+        (Method::Get, "/kb/status") => {
+            let Some(kb) = ctx.kb else {
+                respond(
+                    req,
+                    503,
+                    &serde_json::to_string(&ApiResponse::fail("知识库服务不可用（无界面模式）"))
+                        .unwrap_or_default(),
+                );
+                return;
+            };
+            let status = kb.status();
+            let body = serde_json::json!({
+                "ok": true,
+                "root": status.root,
+                "root_ok": status.root_ok,
+                "enabled": status.enabled,
+                "platform_supported": status.platform_supported,
+                "model": status.model,
             });
             respond(req, 200, &body.to_string());
         }
@@ -1036,6 +1189,51 @@ fn pending_candidates(res: &RememberResponse) -> Vec<CandidateOut> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kb_request_prefers_text_then_url_then_path() {
+        let make = |kind: &str, text: &str, url: &str, path: &str| KbAddIn {
+            kind: kind.into(),
+            text: text.into(),
+            url: url.into(),
+            path: path.into(),
+            ..Default::default()
+        };
+
+        let r = build_kb_request(make("", "一段文字", "https://x.test", r"D:\a.md"));
+        assert_eq!(r.kind, "text");
+        assert_eq!(r.value, "一段文字");
+
+        let r = build_kb_request(make("", "", "https://x.test", r"D:\a.md"));
+        assert_eq!(r.kind, "url");
+        assert_eq!(r.value, "https://x.test");
+
+        let r = build_kb_request(make("", "", "", r"D:\a.md"));
+        assert_eq!(r.kind, "");
+        assert_eq!(r.value, r"D:\a.md");
+
+        // 显式 kind 优先于字段推断
+        let r = build_kb_request(make("url", "忽略", "https://y.test", ""));
+        assert_eq!(r.kind, "url");
+        assert_eq!(r.value, "https://y.test");
+
+        let r = build_kb_request(make("file", "", "", r"D:\b.pdf"));
+        assert_eq!(r.kind, "file");
+        assert_eq!(r.value, r"D:\b.pdf");
+    }
+
+    #[test]
+    fn kb_request_trims_fields() {
+        let r = build_kb_request(KbAddIn {
+            text: "  正文  ".into(),
+            title: " 标题 ".into(),
+            source: " 来源 ".into(),
+            ..Default::default()
+        });
+        assert_eq!(r.value, "正文");
+        assert_eq!(r.title, "标题");
+        assert_eq!(r.source, "来源");
+    }
 
     #[test]
     fn token_is_32_hex_and_unique() {

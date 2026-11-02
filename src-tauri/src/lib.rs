@@ -10,10 +10,14 @@ pub mod rsrs_client;
 pub mod rsrs_install;
 
 pub mod agent;
+pub mod agent_workspace;
 pub mod autostart;
 pub mod automation;
 pub mod graph;
 pub mod graph_vectors;
+pub mod kb;
+pub mod kb_service;
+pub mod kb_settings;
 pub mod llm;
 pub mod processor;
 pub mod processor_settings;
@@ -22,6 +26,7 @@ pub mod recent;
 pub mod reminders;
 pub mod selection;
 pub mod server;
+pub mod shellmenu;
 pub mod targets;
 pub mod extension_setup;
 pub mod updater;
@@ -46,6 +51,8 @@ struct AppState {
     targets: Arc<std::sync::Mutex<targets::TargetStore>>,
     /// 梳理来源（P10）：小窗下拉选择，叠加在 config.toml 之上，立即生效
     processor: Arc<processor_settings::ProcessorSettings>,
+    /// 知识库入库 / AI 窗口（P13）
+    kb: Arc<kb_service::KbService>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2031,13 +2038,236 @@ async fn rsrs_runtime_restart(
         .map_err(|e| format!("rsrs 重启线程失败：{e}"))
 }
 
+// ---------------------------------------------------------------------------
+// 知识库（P13）
+// ---------------------------------------------------------------------------
+
+/// 显示并聚焦 AI / 知识库窗口
+pub(crate) fn show_ai_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("ai") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// 从命令行取 `--kb-add <path>`（右键菜单入口）
+pub(crate) fn ingest_args(argv: &[String]) -> Vec<kb::IngestRequest> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < argv.len() {
+        let arg = argv[i].as_str();
+        let value = if arg == "--kb-add" {
+            i += 1;
+            argv.get(i).map(|s| s.as_str())
+        } else {
+            arg.strip_prefix("--kb-add=")
+        };
+        if let Some(v) = value {
+            let v = v.trim().trim_matches('"').to_string();
+            if !v.is_empty() {
+                out.push(kb::IngestRequest {
+                    kind: String::new(),
+                    value: v,
+                    title: String::new(),
+                    source: String::new(),
+                });
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 是否为「打开 AI 窗口」的启动参数（可做快捷方式：`memtools.exe --ai`）
+pub(crate) fn wants_ai(argv: &[String]) -> bool {
+    argv.iter().any(|a| a == "--ai")
+}
+
+/// 把右键菜单送来的路径塞进队列并唤醒 AI 窗口
+fn accept_ingest_paths(app: &AppHandle, reqs: Vec<kb::IngestRequest>) {
+    if reqs.is_empty() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    for req in reqs {
+        state.kb.push_pending(req);
+    }
+    show_ai_window(app);
+}
+
+#[tauri::command]
+fn kb_status(state: tauri::State<'_, AppState>) -> kb_service::KbStatus {
+    state.kb.status()
+}
+
+/// 选择知识库根目录；返回更新后的状态
+#[tauri::command]
+fn kb_set_root(
+    state: tauri::State<'_, AppState>,
+    root: String,
+) -> Result<kb_service::KbStatus, String> {
+    state.kb.set_root(&root)
+}
+
+/// 系统目录选择框（用于选择知识库根目录）
+#[tauri::command]
+fn kb_pick_root(app: AppHandle) -> Result<Option<String>, String> {
+    pick_folder(&app)
+}
+
+/// 系统目录选择框（用于选择要入库的文件夹）
+#[tauri::command]
+fn kb_pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+    pick_folder(&app)
+}
+
+/// 注册 / 取消资源管理器右键菜单
+#[tauri::command]
+fn kb_set_context_menu(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<kb_service::KbStatus, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位当前可执行文件：{e}"))?;
+    if enabled {
+        shellmenu::install(&exe)?;
+    } else {
+        shellmenu::remove()?;
+    }
+    state
+        .kb
+        .settings()
+        .patch(|c| c.context_menu = Some(enabled))?;
+    Ok(state.kb.status())
+}
+
+/// 提交一条入库任务（文件 / 目录 / 网址 / 文字）
+#[tauri::command]
+fn kb_submit(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    req: kb::IngestRequest,
+) -> Result<kb_service::TaskRecord, String> {
+    show_ai_window(&app);
+    state.kb.submit(req)
+}
+
+#[tauri::command]
+fn kb_tasks(state: tauri::State<'_, AppState>) -> Vec<kb_service::TaskRecord> {
+    state.kb.tasks()
+}
+
+/// 取走启动/右键队列（AI 窗口加载后调用）
+#[tauri::command]
+fn kb_take_pending(state: tauri::State<'_, AppState>) -> Vec<kb::IngestRequest> {
+    state.kb.take_pending()
+}
+
+/// 给 AI 发一条消息（流式事件走 `ai://event`）
+#[tauri::command]
+fn ai_send(app: AppHandle, state: tauri::State<'_, AppState>, text: String) -> Result<(), String> {
+    show_ai_window(&app);
+    state.kb.ai_send(&text)
+}
+
+#[tauri::command]
+fn ai_abort(state: tauri::State<'_, AppState>) {
+    state.kb.ai_abort();
+}
+
+#[tauri::command]
+fn ai_reset(state: tauri::State<'_, AppState>) {
+    state.kb.ai_reset();
+}
+
+#[tauri::command]
+fn ai_open(app: AppHandle) {
+    show_ai_window(&app);
+}
+
+/// 系统「选择文件夹」对话框
+#[cfg(windows)]
+fn pick_folder(app: &AppHandle) -> Result<Option<String>, String> {
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
+    use windows_sys::Win32::UI::Shell::{SHBrowseForFolderW, SHGetPathFromIDListW, BROWSEINFOW};
+
+    let hwnd = app
+        .get_webview_window("ai")
+        .and_then(|w| w.hwnd().ok())
+        .map(|h| h.0 as isize)
+        .unwrap_or(0);
+
+    unsafe {
+        let hr = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
+        let need_uninit = hr >= 0;
+
+        let display = to_wide("选择知识库根目录");
+        let mut bi = BROWSEINFOW {
+            hwndOwner: hwnd as _,
+            pidlRoot: std::ptr::null_mut(),
+            pszDisplayName: std::ptr::null_mut(),
+            lpszTitle: display.as_ptr(),
+            ulFlags: 0x0000_0040, // BIF_NEWDIALOGSTYLE
+            lpfn: None,
+            lParam: 0,
+            iImage: 0,
+        };
+        let pidl = SHBrowseForFolderW(&mut bi as *mut BROWSEINFOW);
+        if pidl.is_null() {
+            if need_uninit {
+                CoUninitialize();
+            }
+            return Ok(None);
+        }
+        let mut buf = [0u16; 1024];
+        let ok = SHGetPathFromIDListW(pidl, buf.as_mut_ptr());
+        CoTaskMemFree(pidl as *mut _);
+        if need_uninit {
+            CoUninitialize();
+        }
+        if ok == 0 {
+            return Err("未取得所选目录路径".into());
+        }
+        let len = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+        let path = String::from_utf16_lossy(&buf[..len]);
+        if path.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(path))
+        }
+    }
+}
+
+#[cfg(windows)]
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(not(windows))]
+fn pick_folder(_app: &AppHandle) -> Result<Option<String>, String> {
+    Err("当前平台请手动填写知识库根目录".into())
+}
+
 pub fn run() {
     let default_config = config::AppConfig::load();
+    // 右键菜单 / 命令行送入的路径（首启时 setup 里消费）
+    let startup_ingest = ingest_args(&std::env::args().collect::<Vec<_>>());
+    let startup_ai = wants_ai(&std::env::args().collect::<Vec<_>>());
 
     tauri::Builder::default()
-        // 单例：重复双击 exe 不再起第二个进程/托盘，改为唤起已有小窗（须最先注册）
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            show_window(app);
+        // 单例：重复双击 exe 不再起第二个进程/托盘，改为唤起已有小窗
+        // （`--kb-add <path>`：转交入库队列并打开 AI 窗口；`--ai`：只打开 AI 窗口）
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let reqs = ingest_args(&argv);
+            if !reqs.is_empty() {
+                accept_ingest_paths(app, reqs);
+            } else if wants_ai(&argv) {
+                show_ai_window(app);
+            } else {
+                show_window(app);
+            }
         }))
         // 开机自启（P12）：注册/取消由设置面板与安装包共同管理；
         // 自启拉起时带 `--autostart`，setup 里据此检查 rsrs runtime。
@@ -2065,6 +2295,10 @@ pub fn run() {
             let processor_settings = Arc::new(processor_settings::ProcessorSettings::load(
                 config_dir.join("processor.json"),
             ));
+            // 知识库（P13）：根目录与右键菜单开关存 knowledge_base.json
+            let kb_settings = Arc::new(kb_settings::KbSettings::load(
+                config_dir.join("knowledge_base.json"),
+            ));
             let client = Arc::new(RsrsClient::new(
                 default_config.rsrs.base_url.clone(),
                 default_config.rsrs.mcp_path.clone(),
@@ -2072,12 +2306,59 @@ pub fn run() {
                 default_config.rsrs.timeout_secs,
                 default_config.rsrs.op_timeout_secs,
             ));
+            let kb = Arc::new(kb_service::KbService::new(
+                {
+                    let handle = app.handle().clone();
+                    Arc::new(move |event: &str, payload: serde_json::Value| {
+                        let _ = handle.emit(event, payload);
+                    })
+                },
+                default_config.knowledge_base.clone(),
+                kb_settings.clone(),
+                processor_settings.clone(),
+                default_config.processor.clone(),
+                default_config.processor.agent.clone(),
+                config_dir.clone(),
+            ));
             app.manage(AppState {
                 config: default_config.clone(),
                 client: client.clone(),
                 targets: target_store.clone(),
                 processor: processor_settings.clone(),
+                kb: kb.clone(),
             });
+            // 右键菜单：设置里开着就（重新）写一次，保证 exe 路径是最新的
+            {
+                let kb_cfg = kb.effective();
+                if kb_cfg.context_menu {
+                    match std::env::current_exe() {
+                        Ok(exe) => {
+                            if let Err(e) = shellmenu::install(&exe) {
+                                eprintln!("[memTools] 注册右键菜单失败：{e}");
+                            }
+                        }
+                        Err(e) => eprintln!("[memTools] 定位可执行文件失败：{e}"),
+                    }
+                }
+            }
+            // 首启带的 `--kb-add`：入队并打开 AI 窗口
+            if !startup_ingest.is_empty() {
+                for req in startup_ingest.clone() {
+                    kb.push_pending(req);
+                }
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    // 等前端事件监听就绪
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    show_ai_window(&handle);
+                });
+            } else if startup_ai {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    show_ai_window(&handle);
+                });
+            }
             // 开机自启（P12）：仅当本次由系统登录拉起时才检查 rsrs；
             // 离线则调用 `rsrs status` 让 rsrs 自行拉起常驻 runtime。
             // 放后台线程：首次拉起可能要加载模型，不能阻塞托盘/热键。
@@ -2216,6 +2497,7 @@ pub fn run() {
                     target_store.clone(),
                     client.clone(),
                     processor_settings.clone(),
+                    kb.clone(),
                 ) {
                     Ok(s) => {
                         eprintln!(
@@ -2230,9 +2512,13 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|_window, event| {
-            if let WindowEvent::Moved(_) = event {
-                // 位置变化实时记录（由 quit/隐藏时落盘亦可）
+        .on_window_event(|window, event| {
+            // AI 窗口点 × 只隐藏，不销毁：否则下次「AI」按钮/入库唤醒将找不到窗口
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "ai" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -2281,7 +2567,19 @@ pub fn run() {
             autostart_set,
             runtime_ensure,
             rsrs_runtime_restart,
-            show_main_window
+            show_main_window,
+            kb_status,
+            kb_set_root,
+            kb_pick_root,
+            kb_pick_folder,
+            kb_set_context_menu,
+            kb_submit,
+            kb_tasks,
+            kb_take_pending,
+            ai_send,
+            ai_abort,
+            ai_reset,
+            ai_open
         ])
         .run(tauri::generate_context!())
         .expect("error while running memTools");
@@ -2290,7 +2588,44 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::looks_like_memory_id;
-    use super::{TargetIn, TargetOut};
+    use super::{ingest_args, wants_ai, TargetIn, TargetOut};
+
+    fn argv(items: &[&str]) -> Vec<String> {
+        std::iter::once("memtools.exe".to_string())
+            .chain(items.iter().map(|s| s.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn ingest_args_reads_kb_add_forms() {
+        let args = ingest_args(&argv(&["--kb-add", r"D:\docs\a b.txt"]));
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].value, r"D:\docs\a b.txt");
+        assert!(args[0].kind.is_empty());
+
+        let args = ingest_args(&argv(&["--kb-add=D:\\x\\y"]));
+        assert_eq!(args[0].value, r"D:\x\y");
+
+        // 忽略无关参数与空值
+        assert!(ingest_args(&argv(&["--autostart"])).is_empty());
+        assert!(ingest_args(&argv(&["--kb-add", "  "])).is_empty());
+    }
+
+    #[test]
+    fn ingest_args_supports_multiple_selections() {
+        let args = ingest_args(&argv(&["--kb-add", "a", "--kb-add", "b"]));
+        assert_eq!(
+            args.iter().map(|r| r.value.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn wants_ai_flag_is_exact() {
+        assert!(wants_ai(&argv(&["--ai"])));
+        assert!(!wants_ai(&argv(&["--autostart"])));
+        assert!(!wants_ai(&argv(&["--kb-add", "a"])));
+    }
 
     #[test]
     fn id_prefix_and_uuid() {

@@ -80,11 +80,13 @@ function updateButtons() {
   const hasText = state.text.trim().length > 0;
   const journal = $("btn-journal");
   const edit = $("btn-edit");
+  const research = $("btn-research");
   if (journal) {
     journal.disabled = state.busy || !hasText;
     journal.textContent = state.busy ? "保存中…" : "存为日记";
   }
   if (edit) { edit.disabled = state.busy || !hasText; edit.textContent = "编辑"; }
+  if (research) { research.disabled = state.busy || !hasText; research.textContent = "AI 调研"; }
 }
 
 function renderPayload() {
@@ -295,8 +297,36 @@ async function onJournal() {
   }
 }
 
-async function onEdit() {
-  if (!state.text.trim()) {
+/* P13：把选中的文字交给 AI 调研，结果进知识库（原窗口自动收起） */
+async function onResearch() {
+  if (state.busy) return;
+  const text = state.text;
+  if (!text.trim()) {
+    setStatus("没有可调研的文字", "warn");
+    return;
+  }
+  state.busy = true;
+  updateButtons();
+  setStatus("已交给 AI 调研…", "");
+  try {
+    await call("kb_submit", {
+      req: {
+        kind: "text",
+        value: text,
+        title: "",
+        source: state.source || "",
+      },
+    });
+    setStatus("已加入知识库队列，请在 AI 窗口查看进度", "ok");
+    window.setTimeout(() => void onClose(), 900);
+  } catch (err) {
+    state.busy = false;
+    updateButtons();
+    setStatus("提交失败：" + messageOf(err), "err");
+  }
+}
+
+async function onEdit() {  if (!state.text.trim()) {
     setStatus("没有可编辑的文字", "warn");
     return;
   }
@@ -355,9 +385,11 @@ function enterBrowserMode() {
 
   const journal = $("btn-journal");
   const edit = $("btn-edit");
+  const research = $("btn-research");
   const closeBtn = $("btn-close");
   if (journal) journal.disabled = true;
   if (edit) edit.disabled = true;
+  if (research) research.disabled = true;
   if (closeBtn) closeBtn.disabled = true;
 
   setStatus("请在 memTools 中打开", "warn");
@@ -367,11 +399,13 @@ async function init() {
   const orb = $("orb");
   const journal = $("btn-journal");
   const edit = $("btn-edit");
+  const research = $("btn-research");
   const closeBtn = $("btn-close");
 
   if (orb) orb.addEventListener("click", () => void onOrbClick());
   if (journal) journal.addEventListener("click", () => void onJournal());
   if (edit) edit.addEventListener("click", () => void onEdit());
+  if (research) research.addEventListener("click", () => void onResearch());
   if (closeBtn) closeBtn.addEventListener("click", () => void onClose());
   document.addEventListener("keydown", onKeydown);
 

@@ -14,7 +14,7 @@
 //!
 //! 默认超时 240s（agent 冷启动比直连模型慢得多），超时杀进程并回传明确错误。
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -68,6 +68,57 @@ pub struct Reply {
     pub bin: String,
     /// 耗时（毫秒）
     pub elapsed_ms: u128,
+    /// 本轮会话 id（opencode 事件流里带；qoder 可能为空）
+    pub session: String,
+}
+
+/// 流式回调事件
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamEvent {
+    /// 一段正文（opencode 的 text 段落，整段到达）
+    Text(String),
+    /// 工具调用（展示成进度行）
+    Tool(String),
+    /// 错误事件
+    Error(String),
+}
+
+/// 一次调用的入参
+#[derive(Debug, Clone, Copy)]
+pub struct Request<'a> {
+    pub prompt: &'a str,
+    /// agent 服务地址（opencode 的 `--server`）；空 = 用默认后台服务
+    pub endpoint: &'a str,
+    /// 会话 id（空 = 新会话；opencode 会创建）
+    pub session: &'a str,
+    /// 取消标志：置位后杀进程（AI 窗口的「停止」）
+    pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+impl<'a> Request<'a> {
+    pub fn new(prompt: &'a str) -> Self {
+        Self {
+            prompt,
+            endpoint: "",
+            session: "",
+            cancel: None,
+        }
+    }
+
+    pub fn session(mut self, id: &'a str) -> Self {
+        self.session = id;
+        self
+    }
+
+    pub fn endpoint(mut self, url: &'a str) -> Self {
+        self.endpoint = url;
+        self
+    }
+
+    pub fn cancel(mut self, flag: &'a std::sync::atomic::AtomicBool) -> Self {
+        self.cancel = Some(flag);
+        self
+    }
 }
 
 /// 执行一次梳理调用。
@@ -77,34 +128,50 @@ pub fn ask(cfg: &AgentConfig, prompt: &str) -> Result<Reply, String> {
     ask_with(cfg, prompt, "")
 }
 
-/// 同 [`ask`]，可带 agent 服务地址（opencode 的 `--attach`；qoder 忽略）
+/// 同 [`ask`]，可带 agent 服务地址（opencode 的 `--server`；qoder 忽略）
 pub fn ask_with(cfg: &AgentConfig, prompt: &str, endpoint: &str) -> Result<Reply, String> {
-    if prompt.trim().is_empty() {
+    ask_full(cfg, Request::new(prompt).endpoint(endpoint), None)
+}
+
+/// 带会话的调用（多轮对话复用同一个 session）
+pub fn ask_session(
+    cfg: &AgentConfig,
+    prompt: &str,
+    endpoint: &str,
+    session: &str,
+) -> Result<Reply, String> {
+    ask_full(
+        cfg,
+        Request::new(prompt).endpoint(endpoint).session(session),
+        None,
+    )
+}
+
+/// 流式调用：每读到一条事件就回调（用于 AI 窗口）。
+pub fn ask_streaming(
+    cfg: &AgentConfig,
+    req: Request<'_>,
+    on_event: &mut dyn FnMut(StreamEvent),
+) -> Result<Reply, String> {
+    ask_full(cfg, req, Some(on_event))
+}
+
+fn ask_full(
+    cfg: &AgentConfig,
+    req: Request<'_>,
+    mut on_event: Option<&mut dyn FnMut(StreamEvent)>,
+) -> Result<Reply, String> {
+    if req.prompt.trim().is_empty() {
         return Err("内容为空".into());
     }
-    let kind = Kind::parse(&cfg.kind)
-        .ok_or_else(|| format!("未知 agent 类型：{}（可选 opencode / qoder）", cfg.kind.trim()))?;
-    let bin = resolve_bin(kind, cfg)?;
-    // .cmd/.bat 包装器不允许带换行/引号参数（Rust 的 CVE-2024-24576 防护），
-    // 此时把提示词压平成单行；正常情况会优先解析出真正的 .exe，不会走到这里。
-    let prompt = if is_batch(&bin) {
-        prompt.replace(['\r', '\n', '"'], " ")
-    } else {
-        prompt.to_string()
-    };
-    let args = build_args_with_endpoint(kind, cfg, &prompt, endpoint);
+    let (kind, bin, args, cwd) = prepare(cfg, req)?;
 
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // 工作目录：默认临时目录，避免 agent 把 memTools 自己的仓库当项目（会读 AGENTS.md、跑 hook）
-    let cwd = workdir(cfg);
-    std::fs::create_dir_all(&cwd)
-        .map_err(|e| format!("无法创建 agent 工作目录 {}：{e}", cwd.display()))?;
-    cmd.current_dir(&cwd);
+        .stderr(Stdio::piped())
+        .current_dir(&cwd);
 
     // 令牌：只在配置里显式给了才注入（不写入日志、不进命令行）
     let token = cfg.token.trim();
@@ -113,7 +180,6 @@ pub fn ask_with(cfg: &AgentConfig, prompt: &str, endpoint: &str) -> Result<Reply
     }
     // 关掉应答式交互（env 层面再兜一层）
     cmd.env("CI", "1");
-
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -122,12 +188,19 @@ pub fn ask_with(cfg: &AgentConfig, prompt: &str, endpoint: &str) -> Result<Reply
     }
 
     let started = Instant::now();
-    let (code, stdout, stderr) = run(cmd, Duration::from_secs(cfg.timeout_secs.max(10)), kind)?;
+    let timeout = Duration::from_secs(cfg.timeout_secs.max(10));
+    let (code, stdout, stderr) = match on_event.as_mut() {
+        Some(cb) => run_streaming(cmd, timeout, kind, *cb, req.cancel)?,
+        None => run(cmd, timeout, kind)?,
+    };
     let elapsed_ms = started.elapsed().as_millis();
 
     if code != 0 {
         if let Some(hint) = auth_hint(kind, &stderr, &stdout) {
             return Err(hint);
+        }
+        if let Some(msg) = first_error_event(&stdout) {
+            return Err(format!("{} 执行失败：{msg}", kind.as_str()));
         }
         return Err(format!(
             "{} 执行失败（退出码 {code}）：{}",
@@ -146,7 +219,32 @@ pub fn ask_with(cfg: &AgentConfig, prompt: &str, endpoint: &str) -> Result<Reply
         kind,
         bin: bin.display().to_string(),
         elapsed_ms,
+        session: parse_session(&stdout),
     })
+}
+
+/// 组装可执行文件、参数与工作目录（进程启动前的全部准备工作）
+fn prepare(
+    cfg: &AgentConfig,
+    req: Request<'_>,
+) -> Result<(Kind, PathBuf, Vec<String>, PathBuf), String> {
+    let kind = Kind::parse(&cfg.kind)
+        .ok_or_else(|| format!("未知 agent 类型：{}（可选 opencode / qoder）", cfg.kind.trim()))?;
+    let bin = resolve_bin(kind, cfg)?;
+    // .cmd/.bat 包装器不允许带换行/引号参数（Rust 的 CVE-2024-24576 防护），
+    // 此时把提示词压平成单行；正常情况会优先解析出真正的 .exe，不会走到这里。
+    let prompt = if is_batch(&bin) {
+        req.prompt.replace(['\r', '\n', '"'], " ")
+    } else {
+        req.prompt.to_string()
+    };
+    let args = build_args_with(kind, cfg, &prompt, req.endpoint, req.session);
+
+    // 工作目录：默认临时目录，避免 agent 把 memTools 自己的仓库当项目（会读 AGENTS.md、跑 hook）
+    let cwd = workdir(cfg);
+    std::fs::create_dir_all(&cwd)
+        .map_err(|e| format!("无法创建 agent 工作目录 {}：{e}", cwd.display()))?;
+    Ok((kind, bin, args, cwd))
 }
 
 /// 探测 agent 可用性（`--version`），供 /agent 与排查使用
@@ -175,19 +273,45 @@ pub fn probe(cfg: &AgentConfig) -> Result<(Kind, String, String), String> {
 
 /// 构建参数数组（不含可执行文件本身）
 pub fn build_args(kind: Kind, cfg: &AgentConfig, prompt: &str) -> Vec<String> {
+    build_args_with(kind, cfg, prompt, "", "")
+}
+
+/// 同 [`build_args`]，可带 `[processor] agent_endpoint`（opencode 的 `--server`）
+pub fn build_args_with_endpoint(
+    kind: Kind,
+    cfg: &AgentConfig,
+    prompt: &str,
+    endpoint: &str,
+) -> Vec<String> {
+    build_args_with(kind, cfg, prompt, endpoint, "")
+}
+
+/// 完整参数构造：会话 id + 服务地址 + 配置项（纯函数，便于单测）。
+///
+/// opencode v2 起 `--pure` 已移除（传入只会打印帮助），`--attach` 更名为 `--server`；
+/// 这里按 `opencode run --help`（v2.2.0）的实际参数生成。
+pub fn build_args_with(
+    kind: Kind,
+    cfg: &AgentConfig,
+    prompt: &str,
+    endpoint: &str,
+    session: &str,
+) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     match kind {
         Kind::OpenCode => {
             args.push("run".into());
             args.push("--format".into());
             args.push("json".into());
-            if cfg.pure {
-                args.push("--pure".into());
+            if cfg.auto {
+                args.push("--auto".into());
             }
             push_opt(&mut args, "-m", &cfg.model);
             push_opt(&mut args, "--agent", &cfg.agent);
+            push_opt(&mut args, "--session", session);
+            push_opt(&mut args, "--server", endpoint);
             args.extend(cfg.extra_args.iter().cloned());
-            // prompt 作为位置参数放最后（--attach 由 build_args_with_endpoint 插到它前面）
+            // prompt 作为位置参数放最后
             args.push(prompt.to_string());
         }
         Kind::Qoder => {
@@ -204,24 +328,6 @@ pub fn build_args(kind: Kind, cfg: &AgentConfig, prompt: &str) -> Vec<String> {
             push_opt(&mut args, "--disallowed-tools", &cfg.disallowed_tools);
             args.extend(cfg.extra_args.iter().cloned());
         }
-    }
-    args
-}
-
-/// 同 [`build_args`]，额外带上 `[processor] agent_endpoint`（opencode 的 `--attach`）
-pub fn build_args_with_endpoint(
-    kind: Kind,
-    cfg: &AgentConfig,
-    prompt: &str,
-    endpoint: &str,
-) -> Vec<String> {
-    let mut args = build_args(kind, cfg, prompt);
-    let url = endpoint.trim();
-    if kind == Kind::OpenCode && !url.is_empty() {
-        // opencode run 的 --attach 需在位置参数（prompt）之前
-        let pos = args.len().saturating_sub(1);
-        args.insert(pos, "--attach".into());
-        args.insert(pos + 1, url.to_string());
     }
     args
 }
@@ -463,6 +569,176 @@ fn run(mut cmd: Command, timeout: Duration, kind: Kind) -> Result<(i32, String, 
     Ok((code, stdout, stderr))
 }
 
+/// 跑子进程并**逐行**读取 stdout，边读边回调；超时杀进程并回明确错误
+fn run_streaming(
+    mut cmd: Command,
+    timeout: Duration,
+    kind: Kind,
+    on_event: &mut dyn FnMut(StreamEvent),
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<(i32, String, String), String> {
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "无法启动 {}：{e}（请检查 config.toml [processor.agent] bin / PATH）",
+            kind.as_str()
+        )
+    })?;
+
+    let (tx, rx) = mpsc::channel::<String>();
+    if let Some(out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let reader = BufReader::new(out);
+            for line in reader.lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let (tx_err, rx_err) = mpsc::channel::<String>();
+    if let Some(mut err) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let _ = err.read_to_string(&mut buf);
+            let _ = tx_err.send(buf);
+        });
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut stdout = String::new();
+    let mut killed = false;
+    let mut cancelled = false;
+
+    loop {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            killed = true;
+            cancelled = true;
+            break;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let _ = child.kill();
+            let _ = child.wait();
+            killed = true;
+            break;
+        }
+        match rx.recv_timeout(remaining.min(Duration::from_millis(250))) {
+            Ok(line) => {
+                if let Some(ev) = parse_event_line(&line) {
+                    on_event(ev);
+                }
+                stdout.push_str(&line);
+                stdout.push('\n');
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let code = if killed {
+        -1
+    } else {
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.code().unwrap_or(-1),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    killed = true;
+                    break -1;
+                }
+                Err(_) => break -1,
+            }
+        }
+    };
+
+    let stderr = rx_err.recv_timeout(Duration::from_secs(2)).unwrap_or_default();
+    if cancelled {
+        return Err("已取消".into());
+    }
+    if killed {
+        return Err(format!(
+            "{} 调用超时（{}s）：已终止。可在 config.toml [knowledge_base] / [processor.agent] 增大 timeout_secs。",
+            kind.as_str(),
+            timeout.as_secs()
+        ));
+    }
+    Ok((code, stdout, stderr))
+}
+
+/// 解析一条 NDJSON 事件（opencode `--format json`）
+pub fn parse_event_line(line: &str) -> Option<StreamEvent> {
+    let line = line.trim();
+    if !line.starts_with('{') {
+        return None;
+    }
+    let v: Value = serde_json::from_str(line).ok()?;
+    match v.get("type").and_then(|t| t.as_str())? {
+        "text" => v
+            .get("part")
+            .and_then(|p| p.get("text"))
+            .and_then(|t| t.as_str())
+            .map(|t| StreamEvent::Text(t.to_string())),
+        "tool_use" | "tool" => {
+            let tool = v
+                .get("part")
+                .and_then(|p| p.get("tool"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("tool");
+            Some(StreamEvent::Tool(tool.to_string()))
+        }
+        "error" => {
+            let msg = v
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .or_else(|| v.get("message").and_then(|m| m.as_str()))
+                .unwrap_or("未知错误");
+            Some(StreamEvent::Error(msg.to_string()))
+        }
+        _ => None,
+    }
+}
+
+/// 从事件流里取会话 id（opencode 每个事件都带 `sessionID`）
+pub fn parse_session(stdout: &str) -> String {
+    for line in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        for key in ["sessionID", "session_id"] {
+            if let Some(id) = v.get(key).and_then(|s| s.as_str()) {
+                if !id.is_empty() {
+                    return id.to_string();
+                }
+            }
+        }
+        if let Some(id) = v
+            .get("part")
+            .and_then(|p| p.get("sessionID"))
+            .and_then(|s| s.as_str())
+        {
+            if !id.is_empty() {
+                return id.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// 事件流里的第一条错误（退出码非 0 时优先于 stderr 回显）
+fn first_error_event(stdout: &str) -> Option<String> {
+    stdout.lines().find_map(|line| match parse_event_line(line) {
+        Some(StreamEvent::Error(msg)) => Some(msg),
+        _ => None,
+    })
+}
+
 /// 取末尾 N 个字符（错误回显用，避免整段日志灌进 UI）
 fn tail(s: &str, n: usize) -> String {
     let t = s.trim();
@@ -675,7 +951,7 @@ mod tests {
         let args = build_args(Kind::OpenCode, &c, "总结这段");
         assert_eq!(args[0], "run");
         assert!(args.contains(&"--format".to_string()));
-        assert!(args.contains(&"--pure".to_string()));
+        assert!(!args.contains(&"--pure".to_string()), "v2 已移除 --pure");
         assert!(args.windows(2).any(|w| w[0] == "-m" && w[1] == "opencode/big-pickle"));
         assert!(args.windows(2).any(|w| w[0] == "--agent" && w[1] == "processor"));
         assert_eq!(args.last().unwrap(), "总结这段");
@@ -686,16 +962,34 @@ mod tests {
     }
 
     #[test]
+    fn opencode_args_add_session_and_auto() {
+        let mut c = cfg("opencode");
+        c.auto = true;
+        let args = build_args_with(Kind::OpenCode, &c, "正文", "", "ses_abc");
+        assert!(args.contains(&"--auto".to_string()));
+        let i = args
+            .iter()
+            .position(|a| a == "--session")
+            .expect("应带 --session");
+        assert_eq!(args[i + 1], "ses_abc");
+        assert_eq!(args.last().unwrap(), "正文");
+        // 空会话不传
+        let plain = build_args_with(Kind::OpenCode, &cfg("opencode"), "x", "", "");
+        assert!(!plain.contains(&"--session".to_string()));
+    }
+
+    #[test]
     fn opencode_args_attach_endpoint_before_prompt() {
         let c = cfg("opencode");
         let args = build_args_with_endpoint(Kind::OpenCode, &c, "正文", "http://127.0.0.1:4096");
-        let attach = args.iter().position(|a| a == "--attach").expect("应带 --attach");
-        assert_eq!(args[attach + 1], "http://127.0.0.1:4096");
+        let i = args.iter().position(|a| a == "--server").expect("应带 --server");
+        assert_eq!(args[i + 1], "http://127.0.0.1:4096");
         assert_eq!(args.last().unwrap(), "正文");
-        assert!(attach < args.len() - 1);
+        assert!(i < args.len() - 1);
+        assert!(!args.contains(&"--attach".to_string()), "v2 已改名 --server");
         // qoder 忽略 endpoint
         let q = build_args_with_endpoint(Kind::Qoder, &cfg("qoder"), "正文", "http://x");
-        assert!(!q.contains(&"--attach".to_string()));
+        assert!(!q.contains(&"--server".to_string()));
     }
 
     #[test]
@@ -778,5 +1072,42 @@ mod tests {
         assert_eq!(extract_text(&v, 0).unwrap(), "正文");
         let none: Value = serde_json::from_str(r#"{"session_id":"abc","type":"result"}"#).unwrap();
         assert!(extract_text(&none, 0).is_none());
+    }
+
+    #[test]
+    fn event_line_maps_to_stream_events() {
+        let text = r#"{"type":"text","part":{"text":"你好","messageID":"m1"}}"#;
+        assert_eq!(parse_event_line(text), Some(StreamEvent::Text("你好".into())));
+        let tool = r#"{"type":"tool_use","part":{"tool":"execute"}}"#;
+        assert_eq!(parse_event_line(tool), Some(StreamEvent::Tool("execute".into())));
+        let err = r#"{"type":"error","error":{"message":"额度不足"}}"#;
+        assert_eq!(parse_event_line(err), Some(StreamEvent::Error("额度不足".into())));
+        assert_eq!(parse_event_line("not json"), None);
+        assert_eq!(parse_event_line(r#"{"type":"step_start"}"#), None);
+    }
+
+    #[test]
+    fn session_is_read_from_any_event() {
+        let stdout = concat!(
+            r#"{"type":"step_start","sessionID":"ses_123","part":{}}"#,
+            "\n",
+            r#"{"type":"text","sessionID":"ses_123","part":{"text":"ok"}}"#,
+            "\n"
+        );
+        assert_eq!(parse_session(stdout), "ses_123");
+        assert_eq!(parse_session(""), "");
+    }
+
+    #[test]
+    fn first_error_event_prefers_structured_message() {
+        let stdout = concat!(
+            r#"{"type":"error","error":{"message":"Insufficient credits"}}"#,
+            "\n"
+        );
+        assert_eq!(
+            first_error_event(stdout).as_deref(),
+            Some("Insufficient credits")
+        );
+        assert!(first_error_event(r#"{"type":"text","part":{"text":"ok"}}"#).is_none());
     }
 }

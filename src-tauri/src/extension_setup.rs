@@ -38,22 +38,94 @@ pub fn prepare(dir: &Path, port: u16, token: &str) -> Result<PathBuf, String> {
     Ok(dir.to_path_buf())
 }
 
-/// 只打开 Chrome 的安装管理页和目录，加载确认仍由浏览器与用户完成。
+/// 浏览器候选：可执行文件相对路径、扩展管理页、用户数据目录（相对 LOCALAPPDATA）
+#[cfg(windows)]
+const BROWSERS: &[(&str, &str, &str)] = &[
+    (
+        "Google/Chrome/Application/chrome.exe",
+        "chrome://extensions/",
+        "Google/Chrome/User Data",
+    ),
+    (
+        "Microsoft/Edge/Application/msedge.exe",
+        "edge://extensions/",
+        "Microsoft/Edge/User Data",
+    ),
+];
+
+/// 已知安装位置里的浏览器可执行文件（不查 PATH，避免命中同名程序）
+#[cfg(windows)]
+fn browser_exe(rel: &str) -> Option<PathBuf> {
+    ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|base| PathBuf::from(base).join(rel))
+        .find(|path| path.is_file())
+}
+
+/// Preferences 里保存路径时反斜杠可能被转义，两种写法都要匹配
+pub fn path_markers(dir: &Path) -> [String; 2] {
+    let plain = dir.to_string_lossy().to_lowercase();
+    let escaped = plain.replace('\\', "\\\\");
+    [plain, escaped]
+}
+
+/// 该浏览器的任意用户配置里是否已加载此目录的扩展
+#[cfg(windows)]
+fn browser_has_extension(dir: &Path, user_data: &str) -> bool {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return false;
+    };
+    let root = PathBuf::from(local).join(user_data);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return false;
+    };
+    let [plain, escaped] = path_markers(dir);
+    for entry in entries.flatten() {
+        let pref = entry.path().join("Preferences");
+        let Ok(raw) = std::fs::read_to_string(&pref) else {
+            continue;
+        };
+        let lower = raw.to_lowercase();
+        if lower.contains(&plain) || lower.contains(&escaped) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 只打开浏览器的安装管理页和目录，加载/重载确认仍由浏览器与用户完成。
+///
+/// 优先打开**已加载过该扩展**的浏览器（Chrome / Edge），都没加载过才退回 Chrome、再退 Edge。
 pub fn open_install_ui(dir: &Path) -> Result<(), String> {
     #[cfg(windows)]
     {
-        // 1. 仅使用已知安装位置，避免从当前目录或任意 PATH 执行同名程序。
-        let chrome = ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]
-            .iter()
-            .filter_map(std::env::var_os)
-            .map(|base| PathBuf::from(base).join("Google/Chrome/Application/chrome.exe"))
-            .find(|path| path.is_file())
-            .ok_or("未检测到 Chrome，请手动打开 chrome://extensions 并加载显示的目录。")?;
-        Command::new(chrome)
-            .arg("chrome://extensions/")
-            .spawn()
-            .map_err(|e| format!("打开 Chrome 扩展管理页失败：{e}"))?;
-        // 2. 同时打开已准备好的目录，便于在加载对话框定位。
+        let mut opened: Option<PathBuf> = None;
+        for (rel, url, user_data) in BROWSERS {
+            let Some(exe) = browser_exe(rel) else { continue };
+            if browser_has_extension(dir, user_data) {
+                Command::new(&exe)
+                    .arg(url)
+                    .spawn()
+                    .map_err(|e| format!("打开浏览器扩展管理页失败：{e}"))?;
+                opened = Some(exe);
+                break;
+            }
+        }
+        if opened.is_none() {
+            for (rel, url, _) in BROWSERS {
+                let Some(exe) = browser_exe(rel) else { continue };
+                Command::new(&exe)
+                    .arg(url)
+                    .spawn()
+                    .map_err(|e| format!("打开浏览器扩展管理页失败：{e}"))?;
+                opened = Some(exe);
+                break;
+            }
+        }
+        let exe = opened.ok_or("未检测到 Chrome 或 Edge，请手动打开浏览器的扩展管理页。")?;
+        let _ = exe;
+        // 同时打开已准备好的目录，便于在加载对话框定位。
         let explorer =
             PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:/Windows".into()))
                 .join("explorer.exe");
@@ -100,5 +172,15 @@ mod tests {
         assert!(prepare(&dir, 0, "fixture").is_err());
         assert!(prepare(&dir, 17650, "").is_err());
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn path_markers_cover_plain_and_escaped_forms() {
+        let dir = Path::new(r"C:\Users\u\AppData\Roaming\com.memtools.desktop\chrome-extension");
+        let [plain, escaped] = path_markers(dir);
+        assert!(plain.contains("com.memtools.desktop\\chrome-extension"));
+        assert!(!plain.contains(r"\\"));
+        assert!(escaped.contains("com.memtools.desktop\\\\chrome-extension"));
+        assert_eq!(escaped.matches('\\').count(), plain.matches('\\').count() * 2);
     }
 }

@@ -2771,6 +2771,13 @@ async function init() {
   // 顶栏按钮
   $("#btn-close").addEventListener("click", closeApp);
   $("#btn-min").addEventListener("click", hideWindow);
+  $("#btn-ai")?.addEventListener("click", async () => {
+    try {
+      await invoke()("ai_open");
+    } catch (e) {
+      setResult("err", "打开 AI 窗口失败", String(e?.message || e));
+    }
+  });
 
   // 层一
   document.querySelectorAll(".seg-btn").forEach((b) =>
