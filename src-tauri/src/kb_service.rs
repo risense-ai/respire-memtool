@@ -142,14 +142,75 @@ impl KbService {
             root,
             root_ok,
             context_menu: cfg.context_menu,
-            model: cfg.effective_model(&proc_cfg.agent.model),
-            agent_kind: proc_cfg.agent.kind.clone(),
-            agent_bin: proc_cfg.agent.bin.clone(),
+            model: self.bound_model(&cfg, &proc_cfg),
+            agent_kind: cfg.agent_kind.clone(),
+            agent_bin: cfg.agent_bin.clone(),
             research_websearch: cfg.research_websearch,
             max_file_mb: cfg.max_file_mb,
             max_files: cfg.max_files,
             timeout_secs: cfg.timeout_secs,
             platform_supported: cfg!(windows),
+        }
+    }
+
+    /// 绑定某个 agent（AI 窗口下拉）；bin/model 留空表示自动
+    pub fn set_agent(
+        &self,
+        kind: &str,
+        bin: &str,
+        model: &str,
+    ) -> Result<KbStatus, String> {
+        let kind = kind.trim().to_lowercase();
+        if agent::Kind::parse(&kind).is_none() {
+            return Err(format!(
+                "不支持的 agent：{kind}（可选：{}）",
+                agent::SUPPORTED_KINDS.join(" / ")
+            ));
+        }
+        self.settings.patch(|c| {
+            c.agent_kind = kind.clone();
+            c.agent_bin = bin.trim().to_string();
+            c.agent_model = model.trim().to_string();
+        })?;
+        Ok(self.status())
+    }
+
+    /// 模型优先级：知识库专属 > 同 kind 的梳理设置 > 空（交给 CLI 默认）
+    fn bound_model(&self, cfg: &KnowledgeBaseConfig, proc_cfg: &ProcessorConfig) -> String {
+        let own = cfg.agent_model.trim();
+        if !own.is_empty() {
+            return own.to_string();
+        }
+        let same_kind = proc_cfg
+            .agent
+            .kind
+            .trim()
+            .eq_ignore_ascii_case(cfg.agent_kind.trim());
+        if same_kind {
+            proc_cfg.agent.model.trim().to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// opencode 用带技能的工作区；其它 agent 只给一个干净的临时 cwd
+    fn workdir_for(&self, cfg: &KnowledgeBaseConfig) -> Result<PathBuf, String> {
+        if cfg.agent_kind.trim().eq_ignore_ascii_case("opencode") {
+            let ws = agent_workspace::ensure(
+                &self.workspace_base,
+                if cfg.root_configured() {
+                    Some(Path::new(cfg.root.trim()))
+                } else {
+                    None
+                },
+                cfg.research_websearch,
+            )?;
+            Ok(ws.dir)
+        } else {
+            let dir = self.workspace_base.join("agent-sandbox");
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("无法创建 agent 工作目录 {}：{e}", dir.display()))?;
+            Ok(dir)
         }
     }
 
@@ -361,17 +422,15 @@ impl KbService {
     fn agent_for(&self, cfg: &KnowledgeBaseConfig, workdir: &Path) -> AgentConfig {
         let proc_cfg = self.processor.effective(&self.processor_base);
         let mut agent = self.agent_base.clone();
-        // 优先跟随梳理下拉（小窗里选过 opencode/qoder）
-        if !proc_cfg.agent.kind.trim().is_empty() {
-            agent.kind = proc_cfg.agent.kind.clone();
+        let kind = cfg.agent_kind.trim().to_lowercase();
+        if !kind.is_empty() {
+            agent.kind = kind;
         }
-        if !proc_cfg.agent.bin.trim().is_empty() {
-            agent.bin = proc_cfg.agent.bin.clone();
+        if !cfg.agent_bin.trim().is_empty() {
+            agent.bin = cfg.agent_bin.trim().to_string();
         }
-        let model = cfg.effective_model(&proc_cfg.agent.model);
-        if !model.is_empty() {
-            agent.model = model;
-        }
+        let model = self.bound_model(cfg, &proc_cfg);
+        agent.model = model;
         agent.workdir = workdir.to_string_lossy().to_string();
         agent.timeout_secs = cfg.timeout_secs.max(30);
         agent
@@ -461,19 +520,15 @@ impl KbService {
             t.stage = "交给 AI 整理".into();
         });
 
-        // ② 工作区 + prompt
-        let workspace = match agent_workspace::ensure(
-            &self.workspace_base,
-            Some(&root),
-            cfg.research_websearch,
-        ) {
-            Ok(w) => w,
+        // ② 工作区 + prompt（opencode 用技能工作区，其它 agent 只给临时 cwd）
+        let workdir = match self.workdir_for(&cfg) {
+            Ok(dir) => dir,
             Err(e) => {
                 self.finish_task(&id, "failed", &e, "");
                 return;
             }
         };
-        let agent_cfg = self.agent_for(&cfg, &workspace.dir);
+        let agent_cfg = self.agent_for(&cfg, &workdir);
         let source_note = kb::source_note(&req, kind);
         // 只有调研类任务需要联网检索
         let research = cfg.research_websearch && matches!(kind, Kind::Url | Kind::Text);
@@ -579,23 +634,15 @@ impl KbService {
 
     fn run_chat(self: Arc<Self>, prompt: String, session: String, cancel: Arc<AtomicBool>) {
         let cfg = self.effective();
-        let workspace = match agent_workspace::ensure(
-            &self.workspace_base,
-            if cfg.root_configured() {
-                Some(Path::new(cfg.root.trim()))
-            } else {
-                None
-            },
-            cfg.research_websearch,
-        ) {
-            Ok(w) => w,
+        let workdir = match self.workdir_for(&cfg) {
+            Ok(dir) => dir,
             Err(e) => {
                 self.set_ai_busy(false, None);
                 self.emit_ai_error(&e);
                 return;
             }
         };
-        let mut agent_cfg = self.agent_for(&cfg, &workspace.dir);
+        let mut agent_cfg = self.agent_for(&cfg, &workdir);
         if agent_cfg.timeout_secs < 120 {
             agent_cfg.timeout_secs = 240;
         }
@@ -779,10 +826,20 @@ fn build_prompt(
         Kind::File | Kind::Folder => "kb-ingest",
         _ => "kb-research",
     };
-    let call = if agent_kind.trim().eq_ignore_ascii_case("opencode") {
+    let is_opencode = agent_kind.trim().eq_ignore_ascii_case("opencode");
+    let call = if is_opencode {
         format!("@{skill}\n\n")
     } else {
+        // 其它 agent 不读 .opencode/skills，直接把技能正文内联进提示词
         String::new()
+    };
+    let inline_skill = if is_opencode {
+        String::new()
+    } else {
+        format!(
+            "\n\n---\n以下技能全文必须遵守：\n\n{}",
+            agent_workspace::skill_body(skill)
+        )
     };
     let value = if kind == Kind::Url {
         req.value.trim().to_string()
@@ -820,12 +877,13 @@ RESEARCH_ALLOWED: {research}\n\n\
 3. 内容要能三个月后单看就懂：结论、要点、来源、缺口。不要编造原文没有的信息。\n\
 4. 完成后按 rsrs 规范写记忆：先 recall 判重，再按「改 ＞ 并 ＞ 挂 ＞ 存」处理；\
 新建必须带 --parent，正文三段【前因】【行为】【后果】，【行为】里写明 MD_PATH 与 ITEM_DIR 和设备。\n\
-5. 最后只输出一行：KB_RESULT: {{\"title\":\"...\",\"memory_id\":\"...\",\"summary\":\"...\"}}\n",
+5. 最后只输出一行：KB_RESULT: {{\"title\":\"...\",\"memory_id\":\"...\",\"summary\":\"...\"}}\n{inline}",
         item = item_dir.display(),
         md = md_path.display(),
         title = title_hint,
         note = source_note,
         kind = kind.as_str(),
+        inline = inline_skill,
     )
 }
 
@@ -1047,10 +1105,13 @@ mod tests {
         assert!(p.contains("RESEARCH_ALLOWED: true"));
         assert!(p.contains("KB_RESULT:"));
 
-        // 非 opencode 不加 @skill
+        // 非 opencode 不加 @skill，改为内联技能全文
         let q = build_prompt("qoder", Kind::Url, item, &md, "t", "", &r, &[], &[], false);
         assert!(!q.starts_with("@kb"));
         assert!(q.contains("RESEARCH_ALLOWED: false"));
+        assert!(q.contains("以下技能全文必须遵守"));
+        assert!(q.contains("RESEARCH_ALLOWED"), "内联调研技能应包含该字段说明");
+        assert!(!q.contains("name: 知识库调研"), "frontmatter 不应内联");
     }
 
     #[test]

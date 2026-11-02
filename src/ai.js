@@ -41,6 +41,7 @@ function messageOf(err) {
 
 const state = {
   status: null,
+  agents: [],
   tasks: new Map(),
   busy: false,
   assistant: null,
@@ -78,13 +79,89 @@ function renderStatus(status) {
   } else if (!status.root_ok) {
     setChip("知识库未就绪：先选目录", "warn");
   } else {
+    const agent = status.agent_kind || "agent";
     const model = status.model ? ` · ${status.model}` : "";
-    setChip(`就绪${model}`, "ok");
+    setChip(`就绪 · ${agent}${model}`, "ok");
   }
   const sw = $("context-menu");
   if (sw) {
     sw.checked = !!status.context_menu;
     sw.disabled = !status.platform_supported;
+  }
+  const sel = $("agent-select");
+  if (sel && status.agent_kind) sel.value = status.agent_kind;
+  const modelInput = $("agent-model");
+  if (modelInput && document.activeElement !== modelInput) {
+    modelInput.value = status.model || "";
+  }
+  updateAgentHint();
+}
+
+function updateAgentHint() {
+  const hint = $("agent-hint");
+  if (!hint) return;
+  const kind = state.status?.agent_kind || "";
+  const found = state.agents.find((a) => a.kind === kind);
+  if (!kind) {
+    hint.textContent = "选一个本机已安装的 agent，聊天与入库都用它。";
+    return;
+  }
+  if (found && found.ok) {
+    hint.textContent = `${kind} 可用：${found.bin || "自动探测"} ${found.version || ""}`.trim();
+  } else if (found) {
+    hint.textContent = `${kind} 未检测到：${found.message || "请确认已安装并登录"}`;
+  } else {
+    hint.textContent = `已绑定 ${kind}；点「绑定」可重新探测。`;
+  }
+}
+
+async function loadAgents() {
+  try {
+    const list = await call("agent_list");
+    state.agents = Array.isArray(list) ? list : [];
+    const sel = $("agent-select");
+    if (!sel) return;
+    const current = state.status?.agent_kind || "";
+    sel.innerHTML = "";
+    for (const a of state.agents) {
+      const opt = document.createElement("option");
+      opt.value = a.kind;
+      opt.textContent = a.ok ? `${a.kind} · ${a.version}` : `${a.kind} · 未检测到`;
+      opt.disabled = !a.ok && a.kind !== current;
+      sel.append(opt);
+    }
+    if (current && !state.agents.some((a) => a.kind === current)) {
+      const opt = document.createElement("option");
+      opt.value = current;
+      opt.textContent = `${current} · 未检测到`;
+      sel.append(opt);
+    }
+    if (current) sel.value = current;
+    updateAgentHint();
+  } catch (err) {
+    const hint = $("agent-hint");
+    if (hint) hint.textContent = "读取 agent 列表失败：" + messageOf(err);
+  }
+}
+
+async function applyAgent() {
+  const sel = $("agent-select");
+  if (!sel || !sel.value) return;
+  const kind = sel.value;
+  const prev = state.status?.agent_kind || "";
+  // 切换 agent 时清空模型：opencode 是 provider/model，qoder 是 auto/efficient 档位，不能混用
+  const switched = kind !== prev;
+  const model = switched ? "" : ($("agent-model")?.value || "").trim();
+  const known = state.agents.find((a) => a.kind === kind);
+  const bin = known?.bin || "";
+  try {
+    const status = await call("kb_set_agent", { kind, bin, model });
+    renderStatus(status);
+    const label = `已绑定 ${kind}${status.model ? " · " + status.model : "（默认模型）"}`;
+    setChip(label, "ok");
+    appendMessage("tool", `AI 智能体已切换为 ${label}`);
+  } catch (err) {
+    appendMessage("error", "绑定失败：" + messageOf(err));
   }
 }
 
@@ -463,6 +540,14 @@ async function init() {
     }
   });
   $("context-menu")?.addEventListener("change", (e) => void toggleContextMenu(!!e.target.checked));
+  $("btn-agent-save")?.addEventListener("click", () => void applyAgent());
+  $("agent-select")?.addEventListener("change", () => void applyAgent());
+  $("agent-model")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void applyAgent();
+    }
+  });
 
   $("path-input")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -502,6 +587,7 @@ async function init() {
   } catch (err) {
     setChip(messageOf(err), "err");
   }
+  await loadAgents();
   try {
     const tasks = await call("kb_tasks");
     if (Array.isArray(tasks)) tasks.forEach(upsertTask);

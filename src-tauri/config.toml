@@ -183,6 +183,8 @@ token_env = ""            # 令牌环境变量名，留空按 kind：qoder → Q
 [knowledge_base]
 enabled = true
 root = ""                    # 知识库根目录；留空 = 未设置，AI 窗口会提示选择
+agent_kind = "opencode"      # 绑定的 agent：opencode | qoder（AI 窗口里可切换）
+agent_bin = ""               # 可执行文件路径；留空自动探测
 max_file_mb = 20             # 单个文件上限（MB），超过直接拒绝
 max_files = 50               # 单次入库文件数上限（目录递归后计数）
 timeout_secs = 600           # 单次 agent 调用超时（大目录整理更慢）

@@ -24,7 +24,7 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 - **自动更新**：从 GitHub Releases 读取清单，下载并校验 SHA-256 后在 Windows 上自替换重启。
 - **rsrs 命令行安装 / 更新**：首次启动检测 `rsrs` 命令，缺失时自动用 npm / pnpm 全局安装官方 CLI，安装与更新进度显示在底栏「rsrs」面板；也可在面板手动检查更新。更新后会回查 registry 显示「已是最新」，运行中的 runtime 仍是旧二进制时，可在面板点「重启 rsrs」→「确认重启」由 memTools 代为重启。
 - **开机自启**：Windows 安装包在目录选择后提供勾选页（默认不勾选，重装时沿用已有设置）；也可在底栏「设置」里随时开关。自启启动时若 rsrs runtime 离线，会调用 `rsrs status` 让 rsrs 自行拉起，并只在托盘常驻，不弹出小窗。
-- **AI 窗口与知识库**（P13）：独立窗口（顶部「AI」按钮打开，也可用 `memtools.exe --ai` 直接唤起；点 × 只隐藏，不销毁），既能和本机 agent（opencode）对话，也能把文件、文件夹、网页或选中文字交给它整理进知识库。一条资料一个文件夹：`<知识库根目录>/<年>/<月>/<主题>-<时间戳>/{original, <标题>.md}`，原文件与 Markdown 放在一起，便于统一管理；整理完成后由 agent 按 rsrs 的「改 / 并 / 挂 / 存」规范写入记忆，并把文件路径与设备写进正文。
+- **AI 窗口与知识库**（P13）：独立窗口（顶部「AI」按钮打开，也可用 `memtools.exe --ai` 直接唤起；点 × 只隐藏，不销毁），既能和本机 agent 对话，也能把文件、文件夹、网页或选中文字交给它整理进知识库。AI 窗口左侧可**选择绑定的 agent**（本机探测到的 `opencode` / `qoder`，可填模型），聊天与入库都用这一套；`opencode` 走带技能的独立工作区，其它 agent 把技能内联进提示词。一条资料一个文件夹：`<知识库根目录>/<年>/<月>/<主题>-<时间戳>/{original, <标题>.md}`，原文件与 Markdown 放在一起，便于统一管理；整理完成后由 agent 按 rsrs 的「改 / 并 / 挂 / 存」规范写入记忆，并把文件路径与设备写进正文。
 - **右键添加到知识库**（仅 Windows）：在资源管理器里右键文件、文件夹或文件夹空白处 →「添加到 memTools 知识库」，路径经单实例转发到已运行的 memTools，AI 窗口随即开工。Windows 11 的经典右键项会被折叠进「显示更多选项」（Shift+F10）。
 - **划词 / 网页入口**：划词面板新增「AI 调研」；浏览器扩展右键新增「AI 调研这段并存入知识库」与「AI 解析此页并存知识库」，两者都通过本机端点 `POST /kb/add` 入队。
 
@@ -174,6 +174,8 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 | --- | --- | --- |
 | `knowledge_base.enabled` | `true` | 关闭后 `/kb/add` 与入库入口直接拒绝 |
 | `knowledge_base.root` | 空 | 知识库根目录；空表示未设置，首次使用在 AI 窗口里选 |
+| `knowledge_base.agent_kind` | `opencode` | 绑定的 agent：`opencode` / `qoder`，AI 窗口里可切换 |
+| `knowledge_base.agent_bin` | 空 | agent 可执行文件；空 = 自动探测 |
 | `knowledge_base.max_file_mb` | `20` | 单文件上限（MB），超限直接拒绝 |
 | `knowledge_base.max_files` | `50` | 单次入库文件数上限（目录递归后计数） |
 | `knowledge_base.timeout_secs` | `600` | 单次 agent 调用超时；大目录整理更慢 |

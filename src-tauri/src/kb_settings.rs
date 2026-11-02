@@ -19,6 +19,10 @@ use crate::config::KnowledgeBaseConfig;
 pub struct KbChoice {
     /// 知识库根目录（空 = 跟随 config.toml）
     pub root: String,
+    /// 绑定的 agent：opencode | qoder（空 = 跟随 config.toml）
+    pub agent_kind: String,
+    /// agent 可执行文件（空 = 自动探测）
+    pub agent_bin: String,
     /// 右键菜单开关（None = 跟随 config.toml）
     pub context_menu: Option<bool>,
     /// opencode 模型（空 = 跟随 config.toml）
@@ -30,12 +34,16 @@ pub struct KbChoice {
 impl KbChoice {
     pub fn normalized(mut self) -> Self {
         self.root = self.root.trim().to_string();
+        self.agent_kind = self.agent_kind.trim().to_lowercase();
+        self.agent_bin = self.agent_bin.trim().to_string();
         self.agent_model = self.agent_model.trim().to_string();
         self
     }
 
     pub fn is_default(&self) -> bool {
         self.root.is_empty()
+            && self.agent_kind.is_empty()
+            && self.agent_bin.is_empty()
             && self.context_menu.is_none()
             && self.agent_model.is_empty()
             && self.enabled.is_none()
@@ -47,6 +55,12 @@ pub fn apply(base: &KnowledgeBaseConfig, choice: &KbChoice) -> KnowledgeBaseConf
     let mut cfg = base.clone();
     if !choice.root.trim().is_empty() {
         cfg.root = choice.root.trim().to_string();
+    }
+    if !choice.agent_kind.trim().is_empty() {
+        cfg.agent_kind = choice.agent_kind.trim().to_lowercase();
+    }
+    if !choice.agent_bin.trim().is_empty() {
+        cfg.agent_bin = choice.agent_bin.trim().to_string();
     }
     if let Some(v) = choice.context_menu {
         cfg.context_menu = v;
@@ -152,15 +166,26 @@ mod tests {
             &base(),
             &KbChoice {
                 root: "  D:\\notes  ".into(),
+                agent_kind: " Qoder ".into(),
+                agent_bin: "  D:\\qodercli.exe  ".into(),
                 context_menu: Some(false),
                 agent_model: "opencode-go/deepseek-v4.1-flash".into(),
                 enabled: Some(false),
             },
         );
         assert_eq!(got.root, r"D:\notes");
+        assert_eq!(got.agent_kind, "qoder");
+        assert_eq!(got.agent_bin, r"D:\qodercli.exe");
         assert!(!got.context_menu);
         assert_eq!(got.agent_model, "opencode-go/deepseek-v4.1-flash");
         assert!(!got.enabled);
+    }
+
+    #[test]
+    fn agent_binding_defaults_to_config() {
+        let got = apply(&base(), &KbChoice::default());
+        assert_eq!(got.agent_kind, "opencode");
+        assert!(got.agent_bin.is_empty(), "空值不应覆盖 config.toml");
     }
 
     #[test]

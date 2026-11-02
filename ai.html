@@ -33,6 +33,14 @@
           </label>
         </div>
         <div class="row">
+          <select id="agent-select" class="input" aria-label="AI 智能体"></select>
+        </div>
+        <div class="row">
+          <input id="agent-model" class="input" type="text" placeholder="模型（opencode 用 provider/model）" spellcheck="false" />
+          <button id="btn-agent-save" class="btn small" type="button">绑定</button>
+        </div>
+        <p class="hint" id="agent-hint">选一个本机已安装的 agent，聊天与入库都用它。</p>
+        <div class="row">
           <input id="path-input" class="input" type="text" placeholder="粘贴文件 / 文件夹路径" spellcheck="false" />
           <button id="btn-add-path" class="btn small" type="button">添加</button>
         </div>

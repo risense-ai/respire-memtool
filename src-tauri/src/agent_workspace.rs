@@ -101,6 +101,25 @@ pub fn ensure(base_dir: &Path, kb_root: Option<&Path>, research: bool) -> Result
     })
 }
 
+/// 取技能正文（去掉 frontmatter），供不读 `.opencode/skills` 的 agent 内联使用
+pub fn skill_body(id: &str) -> &'static str {
+    let raw = match id {
+        "kb-ingest" => SKILL_INGEST,
+        _ => SKILL_RESEARCH,
+    };
+    strip_frontmatter(raw)
+}
+
+/// 去掉 YAML frontmatter（`---` 开头到下一个 `---`）
+fn strip_frontmatter(raw: &str) -> &str {
+    if let Some(rest) = raw.strip_prefix("---") {
+        if let Some(idx) = rest.find("\n---") {
+            return rest[idx + 4..].trim_start_matches(['\r', '\n']);
+        }
+    }
+    raw
+}
+
 /// 内容相同不落盘（避免每次都改 mtime 触发 opencode 重载）
 fn write_if_changed(path: &Path, content: &str) -> Result<(), String> {
     if let Ok(existing) = std::fs::read_to_string(path) {
@@ -211,5 +230,18 @@ mod tests {
         assert!(SKILL_INGEST.contains("name:"));
         assert!(SKILL_RESEARCH.contains("description:"));
         assert!(AGENTS_MD.contains("硬规则"));
+    }
+
+    #[test]
+    fn skill_body_strips_frontmatter() {
+        let body = skill_body("kb-ingest");
+        assert!(body.starts_with('#'), "正文应以标题开头：{}", &body[..20.min(body.len())]);
+        assert!(!body.contains("name: 知识库入库"));
+        assert!(body.contains("MD_PATH"));
+        assert!(body.contains("KB_RESULT"));
+
+        let research = skill_body("kb-research");
+        assert!(research.contains("RESEARCH_ALLOWED"));
+        assert!(!research.contains("description:"));
     }
 }

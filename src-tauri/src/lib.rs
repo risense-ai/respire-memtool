@@ -2101,6 +2101,23 @@ fn kb_status(state: tauri::State<'_, AppState>) -> kb_service::KbStatus {
     state.kb.status()
 }
 
+/// 列出本机可绑定的 agent（探测 --version）
+#[tauri::command]
+fn agent_list() -> Vec<agent::AgentOption> {
+    agent::options()
+}
+
+/// 绑定 agent（AI 窗口下拉）；bin/model 留空表示自动
+#[tauri::command]
+fn kb_set_agent(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    bin: String,
+    model: String,
+) -> Result<kb_service::KbStatus, String> {
+    state.kb.set_agent(&kind, &bin, &model)
+}
+
 /// 选择知识库根目录；返回更新后的状态
 #[tauri::command]
 fn kb_set_root(
@@ -2576,6 +2593,8 @@ pub fn run() {
             kb_submit,
             kb_tasks,
             kb_take_pending,
+            kb_set_agent,
+            agent_list,
             ai_send,
             ai_abort,
             ai_reset,

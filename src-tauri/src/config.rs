@@ -246,6 +246,10 @@ pub struct KnowledgeBaseConfig {
     pub enabled: bool,
     /// 知识库根目录；空 = 未设置
     pub root: String,
+    /// 绑定的 agent：`opencode` | `qoder`
+    pub agent_kind: String,
+    /// agent 可执行文件；空 = 自动探测
+    pub agent_bin: String,
     /// 单个文件上限（MB）
     pub max_file_mb: u64,
     /// 单次入库文件数上限
@@ -265,6 +269,8 @@ impl Default for KnowledgeBaseConfig {
         Self {
             enabled: true,
             root: String::new(),
+            agent_kind: "opencode".into(),
+            agent_bin: String::new(),
             max_file_mb: 20,
             max_files: 50,
             timeout_secs: 600,

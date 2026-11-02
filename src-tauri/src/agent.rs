@@ -247,6 +247,59 @@ fn prepare(
     Ok((kind, bin, args, cwd))
 }
 
+/// 支持的 agent（AI 窗口可绑定）
+pub const SUPPORTED_KINDS: [&str; 2] = ["opencode", "qoder"];
+
+/// 探测结果（供 AI 窗口的智能体下拉）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentOption {
+    pub kind: String,
+    pub bin: String,
+    pub version: String,
+    pub ok: bool,
+    pub message: String,
+}
+
+/// 探测一个 agent；`bin_override` 非空时优先用它
+pub fn probe_option(kind: &str, bin_override: &str) -> AgentOption {
+    let Some(k) = Kind::parse(kind) else {
+        return AgentOption {
+            kind: kind.trim().to_string(),
+            bin: String::new(),
+            version: String::new(),
+            ok: false,
+            message: format!("不支持的 agent：{kind}"),
+        };
+    };
+    let mut cfg = AgentConfig::default();
+    cfg.kind = k.as_str().to_string();
+    let bin = bin_override.trim();
+    if !bin.is_empty() {
+        cfg.bin = bin.to_string();
+    }
+    match probe(&cfg) {
+        Ok((kind, bin, version)) => AgentOption {
+            kind: kind.as_str().to_string(),
+            bin,
+            version,
+            ok: true,
+            message: String::new(),
+        },
+        Err(e) => AgentOption {
+            kind: k.as_str().to_string(),
+            bin: bin.to_string(),
+            version: String::new(),
+            ok: false,
+            message: e,
+        },
+    }
+}
+
+/// 探测所有支持的 agent（AI 窗口初始化用）
+pub fn options() -> Vec<AgentOption> {
+    SUPPORTED_KINDS.iter().map(|k| probe_option(k, "")).collect()
+}
+
 /// 探测 agent 可用性（`--version`），供 /agent 与排查使用
 pub fn probe(cfg: &AgentConfig) -> Result<(Kind, String, String), String> {
     let kind = Kind::parse(&cfg.kind)
