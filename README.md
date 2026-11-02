@@ -1,6 +1,6 @@
 # memTools
 
-memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键唤起无边框小窗，把想法、事实、决策或日记写入本机 rsrs 记忆库，并提供最近记忆、语义搜索、到期提醒和 3D 记忆图谱。应用通过 MCP over HTTP（JSON-RPC 2.0）连接 rsrs runtime；首次启动检测不到 `rsrs` 命令时，会用 npm / pnpm 自动全局安装 rsrs CLI，并提供手动检查更新。它不会停止或重启 rsrs runtime。
+memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键唤起无边框小窗，把想法、事实、决策或日记写入本机 rsrs 记忆库，并提供最近记忆、语义搜索、到期提醒和 3D 记忆图谱。应用通过 MCP over HTTP（JSON-RPC 2.0）连接 rsrs runtime；首次启动检测不到 `rsrs` 命令时，会用 npm / pnpm 自动全局安装 rsrs CLI，并提供手动检查更新。它不会自行停止或重启 rsrs runtime；只有在用户于面板点「确认重启」后才会代为重启。
 
 > **运行前提**：本机需已安装 rsrs，且其 runtime 正在 `http://127.0.0.1:15169` 监听。全新机器上 memTools 会自动安装 rsrs CLI（需要 Node.js / npm）；runtime 通常由 rsrs 自身或宿主应用启动。开启「开机自启」后，memTools 会在系统登录启动时检查 runtime，离线则调用 `rsrs status` 让 rsrs 自行拉起服务；连接失败时界面显示 `runtime 不可达`。
 
@@ -22,7 +22,7 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 - **划词悬浮**（仅 Windows）：拖选或双击选词后先弹小图标，**此时不复制任何东西**；点图标才取词，可存为日记或带入主窗编辑。终端类窗口不注入取词，改为监听应用自身复制。过程中 `Ctrl+C` 的原有行为不受影响。
 - **同步状态**：底栏显示离线、待同步数量和冲突数量。
 - **自动更新**：从 GitHub Releases 读取清单，下载并校验 SHA-256 后在 Windows 上自替换重启。
-- **rsrs 命令行安装 / 更新**：首次启动检测 `rsrs` 命令，缺失时自动用 npm / pnpm 全局安装官方 CLI，安装与更新进度显示在底栏「rsrs」面板；也可在面板手动检查更新。
+- **rsrs 命令行安装 / 更新**：首次启动检测 `rsrs` 命令，缺失时自动用 npm / pnpm 全局安装官方 CLI，安装与更新进度显示在底栏「rsrs」面板；也可在面板手动检查更新。更新后会回查 registry 显示「已是最新」，运行中的 runtime 仍是旧二进制时，可在面板点「重启 rsrs」→「确认重启」由 memTools 代为重启。
 - **开机自启**：Windows 安装包在目录选择后提供勾选页（默认不勾选，重装时沿用已有设置）；也可在底栏「设置」里随时开关。自启启动时若 rsrs runtime 离线，会调用 `rsrs status` 让 rsrs 自行拉起，并只在托盘常驻，不弹出小窗。
 
 ## 平台支持
@@ -37,7 +37,7 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 
 ## 前置条件
 
-1. **rsrs 已安装并运行**：runtime 默认监听 `127.0.0.1:15169`。memTools 首次启动会检测 `rsrs` 命令：未安装时自动通过 npm / pnpm 全局安装（需要 Node.js），不会停止或重启 runtime。仅当开启「开机自启」并由系统登录拉起时，若 runtime 离线，memTools 会调用 `rsrs status` 让 rsrs 自行启动服务。
+1. **rsrs 已安装并运行**：runtime 默认监听 `127.0.0.1:15169`。memTools 首次启动会检测 `rsrs` 命令：未安装时自动通过 npm / pnpm 全局安装（需要 Node.js），安装过程不会停止或重启 runtime；只有在「rsrs」面板点「重启 rsrs」→「确认重启」后才会代为重启。开启「开机自启」并由系统登录拉起时，若 runtime 离线，memTools 会调用 `rsrs status` 让 rsrs 自行启动服务。
 2. **语义索引就绪**：`rsrs status --json` 中的 `retrieval_index.state` 为 `ready` 时，语义搜索、自动化判重和图谱向量才可用。未就绪时界面显示琥珀色“索引未就绪”徽标。
 3. **多账号**：memTools 连接当前在 15169 端口监听的账号 runtime。需要切换账号时，修改 `[rsrs] base_url` 指向对应端口。
 4. **鉴权（可选）**：若 rsrs runtime 要求令牌，在 `[rsrs] auth_token` 填写，或设置环境变量 `RSRS_TOKEN` / `RSRS_AUTH_TOKEN`（环境变量优先）。
@@ -130,7 +130,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 
 ### rsrs CLI 安装与更新
 
-底栏「rsrs」面板负责检测与安装命令行；只安装/升级包，不停止或重启 runtime。runtime 仅在开机自启检查或设置面板「立即检查」时由 `rsrs status` 自行拉起。
+底栏「rsrs」面板负责检测与安装命令行；安装/更新本身不碰 runtime。开机自启检查或设置面板「立即检查」会调用 `rsrs status` 让 rsrs 自行拉起 runtime；升级 CLI 后若需让运行中的 runtime 切换二进制，可在面板点「重启 rsrs」→「确认重启」，由 memTools 调用 `rsrs restart` 代为重启（默认不自动执行）。
 
 | 键 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -138,7 +138,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 | `rsrs_cli.package` | `rsrs-cli` | 官方短名安装入口（与 `@rsrsai/cli` 同仓库同命令，勿同时安装） |
 | `rsrs_cli.fallback_package` | `@rsrsai/cli` | 短名在镜像上未同步时回退使用 |
 
-安装与更新都调用 `npm install -g --no-fund --no-audit <package>@latest`（无 npm 时用 pnpm），进度通过 `rsrs://install` 事件显示在面板中。升级 CLI 后，正在运行的 runtime 仍使用旧二进制，需由宿主应用或 rsrs 自身在下次启动时切换；memTools 不会代为停止服务。
+安装与更新都调用 `npm install -g --no-fund --no-audit <package>@latest`（无 npm 时用 pnpm），进度通过 `rsrs://install` 事件显示在面板中。包名优先取当前 PATH 命中的 `rsrs` 启动脚本里的真实包名（`@rsrsai/cli` / `rsrs-cli`），避免多套安装并存时更新到不生效的那一套；安装完会再次查询 registry，确认是否真的到最新版。升级 CLI 后，正在运行的 runtime 仍使用旧二进制，可在面板点「重启 rsrs」→「确认重启」，由 memTools 调用 `rsrs restart` 切换（跨版本 stop 被旧 runtime 拒绝时，该命令会兜底终止已验证的 runtime 进程）。
 
 ### 自动化
 
@@ -211,7 +211,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 2. **手动重试**：点底栏「rsrs」→「重试安装 rsrs」；已安装但想升级时点「检查更新」→「更新到 vX.Y.Z」。
 3. **网络 / 镜像**：安装走全局 npm registry；代理或镜像异常时，面板会显示 npm 的最后一行错误。也可在终端手动执行 `npm i -g rsrs-cli`。
 4. **命令找不到**：安装成功后仍提示未检测到，请确认 npm 全局 bin 目录在 PATH 中，并重启 memTools。
-5. **runtime 仍离线**：安装 CLI 不等于启动服务。runtime 通常由 rsrs 或宿主应用启动；请重启宿主应用，或在底栏「设置」点「立即检查」、开启「开机自启」让 memTools 调用 `rsrs status` 自行拉起。memTools 不会停止或重启 runtime。
+5. **runtime 仍离线**：安装 CLI 不等于启动服务。runtime 通常由 rsrs 或宿主应用启动；请在底栏「设置」点「立即检查」、开启「开机自启」让 memTools 调用 `rsrs status` 自行拉起，或在「rsrs」面板点「重启 rsrs」→「确认重启」由 memTools 调用 `rsrs restart` 代为重启。默认不会自动重启，必须由用户确认。
 
 ## 索引未就绪怎么办
 

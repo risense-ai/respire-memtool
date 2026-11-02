@@ -2016,6 +2016,21 @@ async fn runtime_ensure(
         .map_err(|e| format!("rsrs runtime 检查线程失败：{e}"))
 }
 
+/// 重启 rsrs runtime（只有在用户于小窗点「确认重启」后才会调用）。
+///
+/// 交给 `rsrs restart`：优雅关闭失败时它会杀已验证的 runtime 进程，
+/// 覆盖跨版本 stop 被旧 runtime 拒绝的情况。
+#[tauri::command]
+async fn rsrs_runtime_restart(
+    state: tauri::State<'_, AppState>,
+) -> Result<autostart::RuntimeRestart, String> {
+    let client = state.client.clone();
+    let cfg = state.config.rsrs_cli.clone();
+    tauri::async_runtime::spawn_blocking(move || autostart::restart_runtime(&client, &cfg))
+        .await
+        .map_err(|e| format!("rsrs 重启线程失败：{e}"))
+}
+
 pub fn run() {
     let default_config = config::AppConfig::load();
 
@@ -2265,6 +2280,7 @@ pub fn run() {
             autostart_status,
             autostart_set,
             runtime_ensure,
+            rsrs_runtime_restart,
             show_main_window
         ])
         .run(tauri::generate_context!())

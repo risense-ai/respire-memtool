@@ -5,11 +5,14 @@
 //!
 //! 1. 检测本机 `rsrs` 命令（PATH + npm/pnpm 常见全局目录）；
 //! 2. 未安装时用包管理器全局安装官方 CLI（默认 `rsrs-cli`，失败回退 `@rsrsai/cli`）；
-//! 3. 查询 registry 最新版本，供界面「手动更新」使用；
+//! 3. 查询 registry 最新版本，供界面「手动更新」使用（优先让 rsrs 自己的
+//!    `update-check` 回答，避免多套安装并存时比错包）；
 //! 4. 把安装/更新进度以 `rsrs://install` 事件推给前端。
 //!
 //! 边界（与项目红线一致）：
-//! - 只安装/升级 CLI 包，**从不启动、停止或重启 rsrs runtime**，也不使用 `--direct`；
+//! - 本模块只安装/升级 CLI 包，**从不启动、停止或重启 rsrs runtime**，
+//!   也不使用 `--direct`；重启只由 `autostart::restart_runtime` 在用户
+//!   于小窗确认后执行；
 //! - 子进程 + 参数数组调用 npm/pnpm，不拼接 shell 字符串；
 //! - 不读取、不修改 rsrs 数据目录，不输出令牌等敏感信息。
 
@@ -19,7 +22,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::config::RsrsCliConfig;
@@ -193,17 +196,22 @@ fn rsrs_candidates() -> Vec<PathBuf> {
 }
 
 fn find_pm() -> Option<PackageManager> {
-    for name in ["npm", "pnpm"] {
-        if let Some(bin) = crate::agent::which(name) {
-            if let Ok((0, ..)) = run_capture(&bin, &["--version"], Duration::from_secs(20)) {
-                return Some(PackageManager {
-                    name: name.to_string(),
-                    bin,
-                });
-            }
-        }
+    ["npm", "pnpm"].into_iter().find_map(find_pm_named)
+}
+
+/// 按名字找可用的包管理器（供 CLI 自报的安装建议使用）。
+fn find_pm_named(name: &str) -> Option<PackageManager> {
+    if !matches!(name, "npm" | "pnpm") {
+        return None;
     }
-    None
+    let bin = crate::agent::which(name)?;
+    match run_capture(&bin, &["--version"], Duration::from_secs(20)) {
+        Ok((0, ..)) => Some(PackageManager {
+            name: name.to_string(),
+            bin,
+        }),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,12 +253,16 @@ pub fn install(app: &AppHandle, cfg: &RsrsCliConfig) -> Result<CliStatus, String
         },
     );
 
-    let primary = package_spec(&cfg.package);
-    // 已装的是旧包名时直接升级旧包，避免 `rsrs-cli` 与 `@rsrsai/cli` 同装抢同一个命令
-    let target = installed_package(&pm, cfg);
-    let primary = match target.as_deref() {
-        Some(name) => package_spec(name),
-        None => primary,
+    // 优先跟随 PATH 实际命中的启动脚本里的包名：同一台机器可能同时存在
+    // npm / pnpm / 旧包名几套安装，`npm ls -g` 看到的未必是真正在跑的那套，
+    // 按它更新会出现「显示已更新，但 rsrs --version 没变」。
+    let primary = match resolve_rsrs().as_deref().and_then(active_package) {
+        Some(name) => package_spec(&name),
+        // 回退：已装的是旧包名时直接升级旧包，避免两个包同装抢同一个命令
+        None => match installed_package(&pm, cfg).as_deref() {
+            Some(name) => package_spec(name),
+            None => package_spec(&cfg.package),
+        },
     };
     let mut result = run_install(app, &pm, &primary);
 
@@ -342,13 +354,123 @@ pub fn install(app: &AppHandle, cfg: &RsrsCliConfig) -> Result<CliStatus, String
     Ok(after)
 }
 
+/// `rsrs update-check --force --json` 的返回（只取需要的字段）。
+#[derive(Debug, Deserialize)]
+struct CliUpdatePayload {
+    summary: CliUpdateSummary,
+    #[serde(default)]
+    actions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CliUpdateSummary {
+    current: Option<String>,
+    latest: Option<String>,
+    #[serde(default)]
+    outdated: bool,
+}
+
+/// CLI 自报的版本信息：比 `npm view` 更贴近「当前 PATH 实际执行的 rsrs」。
+struct CliUpdate {
+    current: Option<String>,
+    latest: String,
+    outdated: bool,
+    package_manager: Option<String>,
+    package: Option<String>,
+}
+
+/// 让 `rsrs` 自己检查 npm 上是否有新版本。
+///
+/// 多套安装（npm / pnpm / 旧包名）并存时，不能用 `npm ls -g` 猜包名：
+/// 它看到的可能不是 PATH 实际命中的那一套。CLI 的 `update-check` 以自身
+/// 包名为准，并在 `actions` 里给出对应的安装命令。
+fn cli_update(bin: &std::path::Path) -> Option<CliUpdate> {
+    let (_code, out, _err) = run_capture(
+        bin,
+        &["update-check", "--force", "--json"],
+        Duration::from_secs(60),
+    )
+    .ok()?;
+    // 旧版 CLI 不认识 update-check：stdout 为空时直接回退
+    let payload = parse_cli_update(&out)?;
+    let latest = payload.summary.latest?;
+    let hint = payload.actions.iter().find_map(|a| parse_install_action(a));
+    let (package_manager, package) = match hint {
+        Some((pm, pkg)) => (Some(pm), Some(pkg)),
+        None => (None, None),
+    };
+    Some(CliUpdate {
+        current: payload.summary.current,
+        outdated: payload.summary.outdated,
+        latest,
+        package_manager,
+        package,
+    })
+}
+
+fn parse_cli_update(raw: &str) -> Option<CliUpdatePayload> {
+    let start = raw.find('{')?;
+    let text = &raw[start..];
+    let end = text.rfind('}')?;
+    serde_json::from_str(&text[..=end]).ok()
+}
+
+/// 从 `npm i -g @rsrsai/cli@latest` 一类建议里取出（包管理器, 包名）。
+fn parse_install_action(action: &str) -> Option<(String, String)> {
+    let tokens: Vec<&str> = action.split_whitespace().collect();
+    let pm = tokens
+        .first()
+        .copied()
+        .filter(|t| matches!(*t, "npm" | "pnpm"))?;
+    let spec = tokens
+        .iter()
+        .rev()
+        .find(|t| t.starts_with('@') || t.to_lowercase().contains("rsrs"))?;
+    Some((pm.to_string(), strip_package_version(spec).to_string()))
+}
+
+/// `@rsrsai/cli@latest` -> `@rsrsai/cli`；`rsrs-cli@1.0.19` -> `rsrs-cli`。
+fn strip_package_version(spec: &str) -> &str {
+    match spec.rfind('@') {
+        Some(idx) if idx > 0 && !spec[..idx].ends_with('/') => &spec[..idx],
+        _ => spec,
+    }
+}
+
 /// 查询 registry 最新版本（供「检查更新」按钮）。同步阻塞。
 pub fn check_latest(cfg: &RsrsCliConfig) -> Result<UpdateCheck, String> {
+    let current = status(cfg);
+
+    // 首选：让当前生效的 rsrs 自己报版本。本机同时存在多套安装、PATH 命中
+    // 的不是 npm 全局那一套时，仍能拿到正确的最新版本与包名。
+    if let Some(bin) = resolve_rsrs() {
+        if let Some(upd) = cli_update(&bin) {
+            let installed = upd.current.clone().or_else(|| current.version.clone());
+            let has_update = upd.outdated
+                || match installed.as_deref() {
+                    Some(v) => crate::updater::version_gt(&upd.latest, v),
+                    None => true,
+                };
+            return Ok(UpdateCheck {
+                installed,
+                has_update,
+                latest: upd.latest,
+                package: upd
+                    .package
+                    .unwrap_or_else(|| cfg.package.trim().to_string()),
+                package_manager: upd
+                    .package_manager
+                    .or_else(|| current.package_manager.clone())
+                    .unwrap_or_else(|| "npm".into()),
+            });
+        }
+    }
+
+    // 回退：旧版 CLI 没有 update-check 时按包管理器查询。
     let pm = find_pm().ok_or_else(|| {
         "未找到 npm / pnpm，无法检查 rsrs 新版本。\n请先安装 Node.js（https://nodejs.org）。"
             .to_string()
     })?;
-    let current = status(cfg);
 
     // 已装旧包名时优先查同一个包，避免把「旧包可升级」误报成「未安装」
     let mut package = installed_package(&pm, cfg)
@@ -430,9 +552,57 @@ fn pick_installed(json: &str, primary: &str, fallback: &str) -> Option<String> {
             return Some(name.to_string());
         }
     }
+    // 优先 rsrs 包名，最后才回退到旧 1memory 包名
     deps.keys()
-        .find(|name| name.contains("rsrs") || name.contains("1memory"))
+        .find(|name| name.contains("rsrs"))
+        .or_else(|| deps.keys().find(|name| name.contains("1memory")))
         .cloned()
+}
+
+/// 当前 PATH 命中的 `rsrs` 启动脚本属于哪个 npm 包。
+///
+/// npm / pnpm 生成的 `.cmd` / `.ps1` 都是文本脚本，里面写着真实的
+/// `node_modules/<包名>/bin/cli.js`；旧版 pnpm 还会写成
+/// `.pnpm/@scope+name@版本/node_modules/@scope/name`。直接读脚本比
+/// `npm ls -g` 可靠，避免更新到 PATH 里另一套历史安装。
+fn active_package(bin: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(bin).ok()?;
+    package_from_shim(&text)
+}
+
+fn package_from_shim(text: &str) -> Option<String> {
+    let normalized = text.replace('\\', "/");
+    for (idx, _) in normalized.match_indices("node_modules/") {
+        let rest = &normalized[idx + "node_modules/".len()..];
+        let mut segs = rest.split('/').filter(|s| !s.is_empty());
+        let first = segs.next()?;
+        let mut name = if first.starts_with('@') {
+            match segs.next() {
+                Some(second) => format!("{first}/{second}"),
+                None => continue,
+            }
+        } else {
+            first.to_string()
+        };
+        // pnpm 虚拟目录：@scope+name@1.2.3
+        if let Some((scope, tail)) = name.split_once('+') {
+            if scope.starts_with('@') {
+                let pkg = tail.split('@').next().unwrap_or(tail);
+                name = format!("{scope}/{pkg}");
+            }
+        }
+        // 非 scope 包可能带版本后缀：rsrs-cli@1.0.19
+        if !name.starts_with('@') {
+            if let Some((bare, _)) = name.split_once('@') {
+                name = bare.to_string();
+            }
+        }
+        let lower = name.to_lowercase();
+        if lower.contains("rsrs") || lower.contains("1memory") {
+            return Some(name);
+        }
+    }
+    None
 }
 
 fn is_missing_package(err: &str) -> bool {
@@ -718,5 +888,64 @@ mod tests {
         let none = r#"{"dependencies":{}}"#;
         assert_eq!(pick_installed(none, "rsrs-cli", "@rsrsai/cli"), None);
         assert_eq!(pick_installed("not json", "rsrs-cli", "@rsrsai/cli"), None);
+
+        // 两套历史包同时存在时优先 rsrs，别把旧 1memory 当成本次更新目标
+        let mixed = r#"{"dependencies":{"@fslong520/1memory-cli":{"version":"0.2.36"},"@rsrsai/cli":{"version":"1.0.19"}}}"#;
+        assert_eq!(
+            pick_installed(mixed, "rsrs-cli", "@rsrsai/cli"),
+            Some("@rsrsai/cli".into())
+        );
+    }
+
+    #[test]
+    fn cli_update_payload_parsing() {
+        let raw = r#"{"command":"update-check","status":"warn","summary":{"ahead":false,"cached":false,"current":"1.0.11-dev.15","latest":"1.0.19","outdated":true},"actions":["npm i -g @rsrsai/cli@latest"]}"#;
+        let payload = parse_cli_update(raw).expect("payload");
+        assert_eq!(payload.summary.current.as_deref(), Some("1.0.11-dev.15"));
+        assert_eq!(payload.summary.latest.as_deref(), Some("1.0.19"));
+        assert!(payload.summary.outdated);
+        assert_eq!(
+            payload.actions.iter().find_map(|a| parse_install_action(a)),
+            Some(("npm".to_string(), "@rsrsai/cli".to_string()))
+        );
+        assert!(parse_cli_update("old cli has no json").is_none());
+    }
+
+    #[test]
+    fn install_action_parsing() {
+        assert_eq!(
+            parse_install_action("npm i -g @rsrsai/cli@latest"),
+            Some(("npm".into(), "@rsrsai/cli".into()))
+        );
+        assert_eq!(
+            parse_install_action("pnpm add -g rsrs-cli@1.0.19"),
+            Some(("pnpm".into(), "rsrs-cli".into()))
+        );
+        assert_eq!(parse_install_action("brew install rsrs"), None);
+        assert_eq!(
+            strip_package_version("@rsrsai/cli"),
+            "@rsrsai/cli"
+        );
+        assert_eq!(strip_package_version("rsrs-cli@latest"), "rsrs-cli");
+    }
+
+    #[test]
+    fn reads_package_from_shim() {
+        // pnpm 生成的 rsrs.cmd（本项目实测格式）
+        let pnpm_shim = "@SET \"NODE_PATH=C:\\Users\\u\\AppData\\Local\\pnpm\\global\\5\\.pnpm\\@rsrsai+cli@1.0.11-dev.15\\node_modules\\@rsrsai\\cli\\node_modules\"\nnode \"%~dp0\\..\\..\\Local\\pnpm\\global\\5\\.pnpm\\@rsrsai+cli@1.0.11-dev.15\\node_modules\\@rsrsai\\cli\\bin\\cli.js\" %*";
+        assert_eq!(package_from_shim(pnpm_shim), Some("@rsrsai/cli".into()));
+
+        // npm 生成的 rsrs.cmd
+        let npm_shim = "\"%~dp0\\node.exe\" \"%~dp0\\node_modules\\rsrs-cli\\bin\\cli.js\" %*";
+        assert_eq!(package_from_shim(npm_shim), Some("rsrs-cli".into()));
+
+        // 旧包名
+        let legacy = "\"%~dp0\\node_modules\\@fslong520\\1memory-cli\\bin\\cli.js\" %*";
+        assert_eq!(
+            package_from_shim(legacy),
+            Some("@fslong520/1memory-cli".into())
+        );
+
+        assert_eq!(package_from_shim("binary shim without js path"), None);
     }
 }
