@@ -246,10 +246,16 @@ pub struct KnowledgeBaseConfig {
     pub enabled: bool,
     /// 知识库根目录；空 = 未设置
     pub root: String,
-    /// 绑定的 agent：`opencode` | `qoder`
+    /// 绑定的 agent：`opencode` | `qoder` | `custom`
     pub agent_kind: String,
     /// agent 可执行文件；空 = 自动探测
     pub agent_bin: String,
+    /// custom：参数模板（空 = 跟随 config.toml / 默认 `{prompt}`）
+    pub agent_args: Vec<String>,
+    /// custom：附加环境变量（KEY=VALUE）
+    pub agent_env: Vec<String>,
+    /// custom：输出解析方式 text | json | opencode-json | qoder-json
+    pub agent_output: String,
     /// 单个文件上限（MB）
     pub max_file_mb: u64,
     /// 单次入库文件数上限
@@ -271,6 +277,9 @@ impl Default for KnowledgeBaseConfig {
             root: String::new(),
             agent_kind: "opencode".into(),
             agent_bin: String::new(),
+            agent_args: Vec::new(),
+            agent_env: Vec::new(),
+            agent_output: String::new(),
             max_file_mb: 20,
             max_files: 50,
             timeout_secs: 600,
@@ -463,7 +472,7 @@ impl ProcessorConfig {
 pub struct AgentConfig {
     /// 是否启用 agent 路径（`[processor] agent_endpoint` 非空时同样启用）
     pub enabled: bool,
-    /// `opencode` | `qoder`
+    /// `opencode` | `qoder` | `custom`
     pub kind: String,
     /// 可执行文件路径；留空自动探测（PATH / 已知安装位置）
     pub bin: String,
@@ -489,6 +498,15 @@ pub struct AgentConfig {
     pub token: String,
     /// 令牌环境变量名；留空按 kind 取默认（qoder → QODER_PERSONAL_ACCESS_TOKEN）
     pub token_env: String,
+    /// custom：参数模板（每个元素是一个 argv），支持 {prompt} {model} {session} {endpoint} 占位；
+    /// 留空等价于 `["{prompt}"]`
+    pub args: Vec<String>,
+    /// custom：附加环境变量，元素形如 `KEY=VALUE`
+    pub env: Vec<String>,
+    /// custom：可选模型候选（AI 窗口下拉用，仍可手填）
+    pub models: Vec<String>,
+    /// custom：输出解析方式 `text` | `json` | `opencode-json` | `qoder-json`
+    pub output: String,
 }
 
 impl Default for AgentConfig {
@@ -508,6 +526,10 @@ impl Default for AgentConfig {
             extra_args: Vec::new(),
             token: String::new(),
             token_env: String::new(),
+            args: Vec::new(),
+            env: Vec::new(),
+            models: Vec::new(),
+            output: String::new(),
         }
     }
 }
@@ -521,6 +543,7 @@ impl AgentConfig {
         }
         match self.kind.trim().to_lowercase().as_str() {
             "qoder" => "QODER_PERSONAL_ACCESS_TOKEN".into(),
+            "custom" => String::new(),
             _ => "OPENCODE_API_KEY".into(),
         }
     }

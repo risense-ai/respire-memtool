@@ -153,12 +153,16 @@ impl KbService {
         }
     }
 
-    /// 绑定某个 agent（AI 窗口下拉）；bin/model 留空表示自动
+    /// 绑定某个 agent（AI 窗口下拉）；bin/model 留空表示自动。
+    /// `args/env/output` 给 custom 用（None = 跟随 config.toml）。
     pub fn set_agent(
         &self,
         kind: &str,
         bin: &str,
         model: &str,
+        args: Option<Vec<String>>,
+        env: Option<Vec<String>>,
+        output: Option<&str>,
     ) -> Result<KbStatus, String> {
         let kind = kind.trim().to_lowercase();
         if agent::Kind::parse(&kind).is_none() {
@@ -171,6 +175,16 @@ impl KbService {
             c.agent_kind = kind.clone();
             c.agent_bin = bin.trim().to_string();
             c.agent_model = model.trim().to_string();
+            // None = 不覆盖（继续跟随 config.toml）；Some(空) = 显式清空
+            if let Some(a) = args.clone() {
+                c.agent_args = a;
+            }
+            if let Some(e) = env.clone() {
+                c.agent_env = e;
+            }
+            if let Some(o) = output {
+                c.agent_output = o.trim().to_lowercase();
+            }
         })?;
         Ok(self.status())
     }
@@ -431,6 +445,16 @@ impl KbService {
         }
         let model = self.bound_model(cfg, &proc_cfg);
         agent.model = model;
+        // 界面绑定的 custom 参数优先于 config.toml（空 = 跟随 config.toml）
+        if !cfg.agent_args.is_empty() {
+            agent.args = cfg.agent_args.clone();
+        }
+        if !cfg.agent_env.is_empty() {
+            agent.env = cfg.agent_env.clone();
+        }
+        if !cfg.agent_output.trim().is_empty() {
+            agent.output = cfg.agent_output.trim().to_lowercase();
+        }
         agent.workdir = workdir.to_string_lossy().to_string();
         agent.timeout_secs = cfg.timeout_secs.max(30);
         agent

@@ -34,12 +34,21 @@
         </div>
         <div class="row">
           <select id="agent-select" class="input" aria-label="AI 智能体"></select>
+          <button id="btn-agent-refresh" class="btn small" type="button" title="重新检测本机已安装的 agent">重新检测</button>
         </div>
         <div class="row">
-          <input id="agent-model" class="input" type="text" placeholder="模型（opencode 用 provider/model）" spellcheck="false" />
+          <input id="agent-model" class="input" type="text" placeholder="模型（可从下拉选，也可手填）" spellcheck="false" list="agent-model-options" />
+          <datalist id="agent-model-options"></datalist>
           <button id="btn-agent-save" class="btn small" type="button">绑定</button>
         </div>
         <p class="hint" id="agent-hint">选一个本机已安装的 agent，聊天与入库都用它。</p>
+        <div class="guide hidden" id="agent-guide">
+          <div class="guide-head">
+            <span id="agent-guide-title"></span>
+            <button id="btn-guide-copy" class="btn small" type="button">复制命令</button>
+          </div>
+          <pre id="agent-guide-body"></pre>
+        </div>
         <div class="row">
           <input id="path-input" class="input" type="text" placeholder="粘贴文件 / 文件夹路径" spellcheck="false" />
           <button id="btn-add-path" class="btn small" type="button">添加</button>

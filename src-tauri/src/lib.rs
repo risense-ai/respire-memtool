@@ -2101,21 +2101,44 @@ fn kb_status(state: tauri::State<'_, AppState>) -> kb_service::KbStatus {
     state.kb.status()
 }
 
-/// 列出本机可绑定的 agent（探测 --version）
+/// 列出可选来源（预设）：内置安装/登录方案 + 实时探测结果
 #[tauri::command]
-fn agent_list() -> Vec<agent::AgentOption> {
-    agent::options()
+fn agent_presets() -> Vec<agent::PresetOption> {
+    agent::presets()
 }
 
-/// 绑定 agent（AI 窗口下拉）；bin/model 留空表示自动
+/// 列出某 agent 可选的模型（AI 窗口模型下拉）
+///
+/// - opencode：跑 `opencode models` 取 provider/model（30s 超时）
+/// - qoder：固定十档
+/// - custom：读 config.toml [processor.agent] models
+#[tauri::command]
+fn agent_models(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    bin: String,
+) -> Result<Vec<String>, String> {
+    if kind.trim().eq_ignore_ascii_case("custom") {
+        return Ok(state.config.processor.agent.models.clone());
+    }
+    agent::models(&kind, &bin)
+}
+
+/// 绑定 agent（AI 窗口下拉）；bin/model 留空表示自动。
+/// args/env/output 给 custom 预设用；传 null 表示继续跟随 config.toml。
 #[tauri::command]
 fn kb_set_agent(
     state: tauri::State<'_, AppState>,
     kind: String,
     bin: String,
     model: String,
+    args: Option<Vec<String>>,
+    env: Option<Vec<String>>,
+    output: Option<String>,
 ) -> Result<kb_service::KbStatus, String> {
-    state.kb.set_agent(&kind, &bin, &model)
+    state
+        .kb
+        .set_agent(&kind, &bin, &model, args, env, output.as_deref())
 }
 
 /// 选择知识库根目录；返回更新后的状态
@@ -2594,7 +2617,8 @@ pub fn run() {
             kb_tasks,
             kb_take_pending,
             kb_set_agent,
-            agent_list,
+            agent_presets,
+            agent_models,
             ai_send,
             ai_abort,
             ai_reset,

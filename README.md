@@ -174,8 +174,11 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 | --- | --- | --- |
 | `knowledge_base.enabled` | `true` | 关闭后 `/kb/add` 与入库入口直接拒绝 |
 | `knowledge_base.root` | 空 | 知识库根目录；空表示未设置，首次使用在 AI 窗口里选 |
-| `knowledge_base.agent_kind` | `opencode` | 绑定的 agent：`opencode` / `qoder`，AI 窗口里可切换 |
+| `knowledge_base.agent_kind` | `opencode` | 绑定的 agent：`opencode` / `qoder` / `custom`，AI 窗口里可切换 |
 | `knowledge_base.agent_bin` | 空 | agent 可执行文件；空 = 自动探测 |
+| `knowledge_base.agent_args` | 空 | custom 参数模板（`{prompt}` `{model}` 等占位） |
+| `knowledge_base.agent_env` | 空 | custom 附加环境变量（`KEY=VALUE`） |
+| `knowledge_base.agent_output` | 空 | custom 输出解析：`text` / `json` / `opencode-json` / `qoder-json` |
 | `knowledge_base.max_file_mb` | `20` | 单文件上限（MB），超限直接拒绝 |
 | `knowledge_base.max_files` | `50` | 单次入库文件数上限（目录递归后计数） |
 | `knowledge_base.timeout_secs` | `600` | 单次 agent 调用超时；大目录整理更慢 |
@@ -184,6 +187,8 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 | `knowledge_base.research_websearch` | `true` | 调研类任务是否允许联网检索 |
 
 界面里选的根目录与右键菜单开关保存在 `{app_config_dir}/knowledge_base.json`，叠加在 `config.toml` 之上，改完立即生效。
+
+AI 窗口的「AI 智能体」下拉列出 opencode、Qoder CLI、Claude Code、Codex CLI 与自定义 CLI。没装或没登录的项点开会展开「安装与配置」面板，给出可复制的安装/启动命令、登录步骤与文档链接。各家的详细操作见 [docs/agent-setup.md](docs/agent-setup.md)。
 
 每个入库任务在 `{app_config_dir}/agent-workspace/` 下运行：独立的 `opencode.json`（默认全禁，只放开读资料、写知识库、`rsrs` 命令与技能加载）、`AGENTS.md` 与两个技能（`kb-ingest`、`kb-research`），不碰用户自己的 `opencode.jsonc`。
 

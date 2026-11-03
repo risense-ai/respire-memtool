@@ -19,10 +19,16 @@ use crate::config::KnowledgeBaseConfig;
 pub struct KbChoice {
     /// 知识库根目录（空 = 跟随 config.toml）
     pub root: String,
-    /// 绑定的 agent：opencode | qoder（空 = 跟随 config.toml）
+    /// 绑定的 agent：opencode | qoder | custom（空 = 跟随 config.toml）
     pub agent_kind: String,
     /// agent 可执行文件（空 = 自动探测）
     pub agent_bin: String,
+    /// custom：参数模板（空 = 跟随 config.toml）
+    pub agent_args: Vec<String>,
+    /// custom：附加环境变量（KEY=VALUE，空 = 跟随 config.toml）
+    pub agent_env: Vec<String>,
+    /// custom：输出解析方式（空 = 跟随 config.toml）
+    pub agent_output: String,
     /// 右键菜单开关（None = 跟随 config.toml）
     pub context_menu: Option<bool>,
     /// opencode 模型（空 = 跟随 config.toml）
@@ -37,6 +43,19 @@ impl KbChoice {
         self.agent_kind = self.agent_kind.trim().to_lowercase();
         self.agent_bin = self.agent_bin.trim().to_string();
         self.agent_model = self.agent_model.trim().to_string();
+        self.agent_output = self.agent_output.trim().to_lowercase();
+        self.agent_args = self
+            .agent_args
+            .into_iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .collect();
+        self.agent_env = self
+            .agent_env
+            .into_iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty())
+            .collect();
         self
     }
 
@@ -44,6 +63,9 @@ impl KbChoice {
         self.root.is_empty()
             && self.agent_kind.is_empty()
             && self.agent_bin.is_empty()
+            && self.agent_args.is_empty()
+            && self.agent_env.is_empty()
+            && self.agent_output.is_empty()
             && self.context_menu.is_none()
             && self.agent_model.is_empty()
             && self.enabled.is_none()
@@ -67,6 +89,15 @@ pub fn apply(base: &KnowledgeBaseConfig, choice: &KbChoice) -> KnowledgeBaseConf
     }
     if !choice.agent_model.trim().is_empty() {
         cfg.agent_model = choice.agent_model.trim().to_string();
+    }
+    if !choice.agent_args.is_empty() {
+        cfg.agent_args = choice.agent_args.clone();
+    }
+    if !choice.agent_env.is_empty() {
+        cfg.agent_env = choice.agent_env.clone();
+    }
+    if !choice.agent_output.trim().is_empty() {
+        cfg.agent_output = choice.agent_output.trim().to_lowercase();
     }
     if let Some(v) = choice.enabled {
         cfg.enabled = v;
@@ -171,6 +202,7 @@ mod tests {
                 context_menu: Some(false),
                 agent_model: "opencode-go/deepseek-v4.1-flash".into(),
                 enabled: Some(false),
+                ..Default::default()
             },
         );
         assert_eq!(got.root, r"D:\notes");

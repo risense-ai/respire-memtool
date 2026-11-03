@@ -29,6 +29,8 @@ use crate::config::AgentConfig;
 pub enum Kind {
     OpenCode,
     Qoder,
+    /// 任意 CLI：参数模板 + 输出解析全部来自配置
+    Custom,
 }
 
 impl Kind {
@@ -37,6 +39,7 @@ impl Kind {
         match raw.trim().to_lowercase().as_str() {
             "opencode" | "open-code" => Some(Kind::OpenCode),
             "qoder" | "qodercli" => Some(Kind::Qoder),
+            "custom" | "自定" | "自定义" => Some(Kind::Custom),
             _ => None,
         }
     }
@@ -45,14 +48,16 @@ impl Kind {
         match self {
             Kind::OpenCode => "opencode",
             Kind::Qoder => "qoder",
+            Kind::Custom => "custom",
         }
     }
 
-    /// PATH 上的默认可执行文件名
+    /// PATH 上的默认可执行文件名（custom 无默认，必须配置 bin）
     fn default_bin(self) -> &'static str {
         match self {
             Kind::OpenCode => "opencode",
             Kind::Qoder => "qodercli",
+            Kind::Custom => "",
         }
     }
 }
@@ -175,8 +180,22 @@ fn ask_full(
 
     // 令牌：只在配置里显式给了才注入（不写入日志、不进命令行）
     let token = cfg.token.trim();
-    if !token.is_empty() {
-        cmd.env(cfg.token_env_name(), token);
+    let token_env = cfg.token_env_name();
+    if !token.is_empty() && !token_env.trim().is_empty() {
+        cmd.env(token_env.trim(), token);
+    }
+    // custom：任意附加环境变量（KEY=VALUE）
+    for kv in &cfg.env {
+        let kv = kv.trim();
+        if kv.is_empty() {
+            continue;
+        }
+        match kv.split_once('=') {
+            Some((k, v)) if !k.trim().is_empty() => {
+                cmd.env(k.trim(), v.trim());
+            }
+            _ => return Err(format!("[processor.agent] env 需写成 KEY=VALUE，当前：{kv}")),
+        }
     }
     // 关掉应答式交互（env 层面再兜一层）
     cmd.env("CI", "1");
@@ -189,8 +208,19 @@ fn ask_full(
 
     let started = Instant::now();
     let timeout = Duration::from_secs(cfg.timeout_secs.max(10));
+    // 流式是否真的吐过正文：qoder（单条 JSON）与 custom（纯文本）不会产生事件流，
+    // 需要在结尾补一条 Text 事件，否则 AI 窗口只看到「思考中」、看不到回答。
+    let mut streamed_text = false;
     let (code, stdout, stderr) = match on_event.as_mut() {
-        Some(cb) => run_streaming(cmd, timeout, kind, *cb, req.cancel)?,
+        Some(cb) => {
+            let mut wrapped = |ev: StreamEvent| {
+                if matches!(ev, StreamEvent::Text(_)) {
+                    streamed_text = true;
+                }
+                cb(ev);
+            };
+            run_streaming(cmd, timeout, kind, &mut wrapped, req.cancel)?
+        }
         None => run(cmd, timeout, kind)?,
     };
     let elapsed_ms = started.elapsed().as_millis();
@@ -212,7 +242,15 @@ fn ask_full(
     let text = match kind {
         Kind::OpenCode => parse_opencode(&stdout),
         Kind::Qoder => parse_qoder(&stdout),
+        Kind::Custom => parse_custom(&stdout, &cfg.output),
     }?;
+
+    // 非事件流输出（qoder / custom text）补发最终正文，供 AI 窗口渲染
+    if !streamed_text {
+        if let Some(cb) = on_event.as_mut() {
+            cb(StreamEvent::Text(text.clone()));
+        }
+    }
 
     Ok(Reply {
         text,
@@ -229,7 +267,7 @@ fn prepare(
     req: Request<'_>,
 ) -> Result<(Kind, PathBuf, Vec<String>, PathBuf), String> {
     let kind = Kind::parse(&cfg.kind)
-        .ok_or_else(|| format!("未知 agent 类型：{}（可选 opencode / qoder）", cfg.kind.trim()))?;
+        .ok_or_else(|| format!("未知 agent 类型：{}（可选 opencode / qoder / custom）", cfg.kind.trim()))?;
     let bin = resolve_bin(kind, cfg)?;
     // .cmd/.bat 包装器不允许带换行/引号参数（Rust 的 CVE-2024-24576 防护），
     // 此时把提示词压平成单行；正常情况会优先解析出真正的 .exe，不会走到这里。
@@ -248,7 +286,7 @@ fn prepare(
 }
 
 /// 支持的 agent（AI 窗口可绑定）
-pub const SUPPORTED_KINDS: [&str; 2] = ["opencode", "qoder"];
+pub const SUPPORTED_KINDS: [&str; 3] = ["opencode", "qoder", "custom"];
 
 /// 探测结果（供 AI 窗口的智能体下拉）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -295,15 +333,33 @@ pub fn probe_option(kind: &str, bin_override: &str) -> AgentOption {
     }
 }
 
-/// 探测所有支持的 agent（AI 窗口初始化用）
-pub fn options() -> Vec<AgentOption> {
-    SUPPORTED_KINDS.iter().map(|k| probe_option(k, "")).collect()
+/// 用完整配置探测（custom 的 bin 来自配置，不能用默认值）
+pub fn probe_config(cfg: &AgentConfig) -> AgentOption {
+    let kind_name = Kind::parse(&cfg.kind)
+        .map(|k| k.as_str().to_string())
+        .unwrap_or_else(|| cfg.kind.trim().to_string());
+    match probe(cfg) {
+        Ok((kind, bin, version)) => AgentOption {
+            kind: kind.as_str().to_string(),
+            bin,
+            version,
+            ok: true,
+            message: String::new(),
+        },
+        Err(e) => AgentOption {
+            kind: kind_name,
+            bin: cfg.bin.trim().to_string(),
+            version: String::new(),
+            ok: false,
+            message: e,
+        },
+    }
 }
 
-/// 探测 agent 可用性（`--version`），供 /agent 与排查使用
+/// 探测 agent 可用性（`--version` + 登录态），供 /agent 与排查使用
 pub fn probe(cfg: &AgentConfig) -> Result<(Kind, String, String), String> {
     let kind = Kind::parse(&cfg.kind)
-        .ok_or_else(|| format!("未知 agent 类型：{}（可选 opencode / qoder）", cfg.kind.trim()))?;
+        .ok_or_else(|| format!("未知 agent 类型：{}（可选 opencode / qoder / custom）", cfg.kind.trim()))?;
     let bin = resolve_bin(kind, cfg)?;
     let mut cmd = Command::new(&bin);
     cmd.arg("--version")
@@ -317,7 +373,52 @@ pub fn probe(cfg: &AgentConfig) -> Result<(Kind, String, String), String> {
     }
     let (code, stdout, stderr) = run(cmd, Duration::from_secs(15), kind)?;
     let out = if code == 0 { stdout } else { stderr };
-    Ok((kind, bin.display().to_string(), tail(&out, 120)))
+    // 有些 CLI 不认 --version（直接退出非 0），只要有输出就当作版本信息
+    let version = tail(out.trim(), 120);
+    if kind == Kind::Custom && version.trim().is_empty() {
+        return Ok((
+            kind,
+            bin.display().to_string(),
+            format!("已找到可执行文件（--version 无输出，退出码 {code}）"),
+        ));
+    }
+    // Qoder 的 --version 不体现登录态，单独查 status，避免“显示就绪、一跑就未登录”
+    if kind == Kind::Qoder {
+        if let Some(msg) = qoder_login_hint(&bin) {
+            return Err(msg);
+        }
+    }
+    Ok((kind, bin.display().to_string(), version))
+}
+
+/// Qoder：跑 `qodercli status` 看 Account 行；未登录返回提示，已登录或查不出来返回 None
+fn qoder_login_hint(bin: &std::path::Path) -> Option<String> {
+    let mut cmd = Command::new(bin);
+    cmd.arg("status")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let (_, stdout, stderr) = run(cmd, Duration::from_secs(10), Kind::Qoder).ok()?;
+    let text = format!("{stdout}\n{stderr}");
+    let account = text
+        .lines()
+        .find(|l| l.trim_start().to_lowercase().starts_with("account"))?
+        .trim()
+        .to_string();
+    if account.to_lowercase().contains("not logged in") {
+        return Some(format!(
+            "qodercli 已找到但未登录（{account}）。PowerShell 里运行：& \"{}\" 然后输入 /login\
+（它通常不在 PATH 上，直接敲 qodercli 会报「无法识别」）。也可以设环境变量 \
+QODER_PERSONAL_ACCESS_TOKEN，或写 config.toml [processor.agent] token。",
+            bin.display()
+        ));
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -381,8 +482,40 @@ pub fn build_args_with(
             push_opt(&mut args, "--disallowed-tools", &cfg.disallowed_tools);
             args.extend(cfg.extra_args.iter().cloned());
         }
+        Kind::Custom => {
+            let template = if cfg.args.is_empty() {
+                vec!["{prompt}".to_string()]
+            } else {
+                cfg.args.clone()
+            };
+            for part in template {
+                let filled = fill_placeholders(&part, cfg, prompt, endpoint, session);
+                // 空占位（如未配 model）整体丢弃，避免把空串当参数传下去
+                if !filled.is_empty() {
+                    args.push(filled);
+                }
+            }
+            args.extend(cfg.extra_args.iter().cloned());
+        }
     }
     args
+}
+
+/// 把 `{prompt}` `{model}` `{session}` `{endpoint}` 占位替换为实际值
+fn fill_placeholders(
+    template: &str,
+    cfg: &AgentConfig,
+    prompt: &str,
+    endpoint: &str,
+    session: &str,
+) -> String {
+    template
+        .replace("{prompt}", prompt)
+        .replace("{model}", cfg.model.trim())
+        .replace("{session}", session)
+        .replace("{endpoint}", endpoint)
+        .replace("{workdir}", cfg.workdir.trim())
+        .replace("{agent}", cfg.agent.trim())
 }
 
 fn push_opt(args: &mut Vec<String>, flag: &str, value: &str) {
@@ -405,11 +538,20 @@ pub fn resolve_bin(kind: Kind, cfg: &AgentConfig) -> Result<PathBuf, String> {
         if p.is_file() {
             return Ok(prefer_exe(p));
         }
-        // 允许只写文件名（走 PATH）
+        // 只写了命令名：先查 PATH
         if !custom.contains(['\\', '/']) {
             if let Some(found) = which(custom) {
                 return Ok(prefer_exe(found));
             }
+            // 命令名没上 PATH：再按 kind 的已知安装位置找一次
+            // （Qoder 的 qodercli 藏在 IDE 的 resources 目录里，从来不在 PATH）
+            if let Some(found) = candidates(kind).into_iter().find(|c| c.is_file()) {
+                return Ok(prefer_exe(found));
+            }
+            return Err(format!(
+                "{custom} 不在 PATH 上，也没在已知安装位置找到：装好后把目录加进 PATH，\
+或在 config.toml [processor.agent] bin 填完整路径。"
+            ));
         }
         return Err(format!(
             "找不到 agent 可执行文件：{custom}。请在 config.toml [processor.agent] bin 填完整路径。"
@@ -420,6 +562,10 @@ pub fn resolve_bin(kind: Kind, cfg: &AgentConfig) -> Result<PathBuf, String> {
         if cand.is_file() {
             return Ok(prefer_exe(cand));
         }
+    }
+
+    if kind == Kind::Custom {
+        return Err("自定义 agent 还没有配置可执行文件：在 config.toml [processor.agent] 填 bin（完整路径或命令名）。".into());
     }
 
     let name = kind.default_bin();
@@ -508,6 +654,8 @@ fn candidates(kind: Kind) -> Vec<PathBuf> {
                 }
             }
         }
+        // 自定义 CLI 没有已知安装位置，必须由配置给 bin
+        Kind::Custom => {}
     }
     out
 }
@@ -516,6 +664,7 @@ fn hint_for(kind: Kind) -> &'static str {
     match kind {
         Kind::OpenCode => "npm i -g opencode-ai 后 opencode 应在 PATH 上",
         Kind::Qoder => "Qoder 的 qodercli 通常在 <Qoder 安装目录>/resources/app/resources/bin/x86_64_windows/ 下",
+        Kind::Custom => "自定义 agent：在 config.toml [processor.agent] 填 bin（可执行文件或命令名）",
     }
 }
 
@@ -814,13 +963,287 @@ fn auth_hint(kind: Kind, stderr: &str, stdout: &str) -> Option<String> {
         return None;
     }
     Some(match kind {
-        Kind::Qoder => "Qoder 未登录：先运行 `qodercli /login`（或设置 QODER_PERSONAL_ACCESS_TOKEN，\
-也可写在 config.toml [processor.agent] token）。"
+        Kind::Qoder => "Qoder 未登录：先运行 `qodercli`，在交互界面输入 `/login`（或设置 \
+QODER_PERSONAL_ACCESS_TOKEN，也可写在 config.toml [processor.agent] token）。"
             .into(),
         Kind::OpenCode => "opencode 未配置模型鉴权：请确认 opencode 的 provider/apiKey 可用，\
 并在 [processor.agent] model 填 provider/model（如 opencode/big-pickle）。"
             .into(),
+        Kind::Custom => "自定义 agent 返回鉴权失败：按该 CLI 自身的登录方式处理，\
+或在 [processor.agent] token / token_env 注入凭据。"
+            .into(),
     })
+}
+
+/// custom 输出解析：按 `[processor.agent] output` 选择
+pub fn parse_custom(stdout: &str, output: &str) -> Result<String, String> {
+    match output.trim().to_lowercase().as_str() {
+        "opencode-json" => parse_opencode(stdout),
+        "qoder-json" => parse_qoder(stdout),
+        "json" => parse_generic_json(stdout),
+        _ => {
+            let text = stdout.trim();
+            if text.is_empty() {
+                return Err("自定义 agent 没有输出".into());
+            }
+            Ok(text.to_string())
+        }
+    }
+}
+
+/// 通用 JSON 输出：按常见字段顺序取正文
+fn parse_generic_json(stdout: &str) -> Result<String, String> {
+    let raw = stdout.trim();
+    if raw.is_empty() {
+        return Err("自定义 agent 没有输出".into());
+    }
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        // 不是 JSON 就原样返回，避免把可用输出丢掉
+        return Ok(raw.to_string());
+    };
+    for key in ["result", "text", "content", "response", "output", "message"] {
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+            if !s.trim().is_empty() {
+                return Ok(s.trim().to_string());
+            }
+        }
+    }
+    Ok(raw.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// 模型候选（AI 窗口下拉）
+// ---------------------------------------------------------------------------
+
+/// Qoder 的 `--model` 固定档位（来自 qodercli 1.1.1 --help）
+pub const QODER_MODELS: [&str; 10] = [
+    "auto",
+    "efficient",
+    "gmodel",
+    "kmodel",
+    "lite",
+    "mmodel",
+    "performance",
+    "q35model",
+    "qmodel",
+    "ultimate",
+];
+
+/// 列出某 agent 可选的模型；`bin_override` 非空时优先用它
+pub fn models(kind: &str, bin_override: &str) -> Result<Vec<String>, String> {
+    let k = Kind::parse(kind)
+        .ok_or_else(|| format!("未知 agent 类型：{}（可选 opencode / qoder / custom）", kind.trim()))?;
+    match k {
+        Kind::Qoder => Ok(QODER_MODELS.iter().map(|s| s.to_string()).collect()),
+        Kind::Custom => Ok(Vec::new()),
+        Kind::OpenCode => {
+            let mut cfg = AgentConfig::default();
+            cfg.kind = "opencode".into();
+            let bin = bin_override.trim();
+            if !bin.is_empty() {
+                cfg.bin = bin.to_string();
+            }
+            let bin = resolve_bin(k, &cfg)?;
+            let mut cmd = Command::new(&bin);
+            cmd.arg("models")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            let (code, stdout, stderr) = run(cmd, Duration::from_secs(30), k)?;
+            if code != 0 {
+                return Err(format!(
+                    "opencode models 失败（退出码 {code}）：{}",
+                    tail(&stderr, 200)
+                ));
+            }
+            let mut out: Vec<String> = stdout
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty() && l.contains('/'))
+                .map(|l| l.to_string())
+                .collect();
+            out.sort();
+            out.dedup();
+            Ok(out)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 可选来源预设（AI 窗口下拉：装了什么用什么，没装给安装方案）
+// ---------------------------------------------------------------------------
+
+/// 一个可选来源：既能直接跑的（opencode/qoder），也能一键填好参数当 custom 跑的（claude/codex）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PresetOption {
+    /// 下拉值 / 绑定标识
+    pub id: String,
+    /// 界面显示名
+    pub label: String,
+    /// 绑定后使用的 kind：opencode | qoder | custom
+    pub kind: String,
+    /// 绑定时写入的可执行文件名
+    pub bin: String,
+    /// custom 参数模板
+    pub args: Vec<String>,
+    /// custom 附加环境变量
+    pub env: Vec<String>,
+    /// custom 输出解析
+    pub output: String,
+    /// 安装命令（可直接复制）
+    pub install: String,
+    /// 登录/鉴权步骤
+    pub login: String,
+    /// 额外说明（PATH、首次配置等）
+    pub note: String,
+    /// 官方文档
+    pub docs: String,
+    /// 是否已就绪（装好且能跑）
+    pub ok: bool,
+    /// 版本信息（就绪时）
+    pub version: String,
+    /// 未就绪原因（可操作提示）
+    pub message: String,
+    /// 实际解析到的可执行文件路径（未安装为空）
+    pub found: String,
+}
+
+struct PresetDef {
+    id: &'static str,
+    label: &'static str,
+    kind: &'static str,
+    bin: &'static str,
+    args: &'static [&'static str],
+    env: &'static [&'static str],
+    output: &'static str,
+    install: &'static str,
+    login: &'static str,
+    note: &'static str,
+    docs: &'static str,
+}
+
+/// 内置来源清单：id → 探测方式 + 安装/登录/配置方案
+fn preset_defs() -> Vec<PresetDef> {
+    vec![
+        PresetDef {
+            id: "opencode",
+            label: "opencode",
+            kind: "opencode",
+            bin: "opencode",
+            args: &[],
+            env: &[],
+            output: "",
+            install: "npm i -g opencode-ai",
+            login: "opencode auth login（选 provider 并填 key；也可用环境变量，如 OPENCODE_API_KEY）",
+            note: "装完新开一个终端，让 PATH 生效；模型填 provider/model，例如 opencode/big-pickle",
+            docs: "https://opencode.ai/docs",
+        },
+        PresetDef {
+            id: "qoder",
+            label: "Qoder CLI",
+            kind: "qoder",
+            bin: "qodercli",
+            args: &[],
+            env: &[],
+            output: "",
+            install: "安装 Qoder IDE（自带 qodercli，无需单独 npm 安装）",
+            login: "先启动 qodercli，再在交互界面输入 /login",
+            note: "qodercli 通常在 <Qoder 安装目录>/resources/app/resources/bin/x86_64_windows/，不在 PATH 上，直接用名字会报找不到；把该目录加进 PATH，或在 bin 里填完整路径",
+            docs: "https://docs.qoder.com",
+        },
+        PresetDef {
+            id: "claude",
+            label: "Claude Code",
+            kind: "custom",
+            bin: "claude",
+            args: &["-p", "{prompt}", "--output-format", "json"],
+            env: &[],
+            output: "json",
+            install: "npm install -g @anthropic-ai/claude-code",
+            login: "运行 claude 后输入 /login（或设置 ANTHROPIC_API_KEY）",
+            note: "首次使用需登录并同意条款；模型可留空用默认，或填 claude-sonnet / claude-opus 等",
+            docs: "https://docs.anthropic.com/en/docs/claude-code",
+        },
+        PresetDef {
+            id: "codex",
+            label: "Codex CLI",
+            kind: "custom",
+            bin: "codex",
+            args: &["exec", "{prompt}"],
+            env: &[],
+            output: "text",
+            install: "npm install -g @openai/codex",
+            login: "运行 codex login（或设置 OPENAI_API_KEY）",
+            note: "模型可留空用默认，或填 gpt-5-codex 等",
+            docs: "https://github.com/openai/codex",
+        },
+        PresetDef {
+            id: "custom",
+            label: "自定义 CLI",
+            kind: "custom",
+            bin: "",
+            args: &["{prompt}"],
+            env: &[],
+            output: "text",
+            install: "自备任意命令行 agent（任何能把 prompt 作为参数、把回答打到 stdout 的 CLI）",
+            login: "按该 CLI 自己的方式登录",
+            note: "绑定后在 config.toml [processor.agent] 填 bin / args / env / output；占位符支持 {prompt} {model} {session} {endpoint} {workdir} {agent}",
+            docs: "",
+        },
+    ]
+}
+
+/// 列出所有来源并逐个探测（PATH、已知安装位置、登录态）
+pub fn presets() -> Vec<PresetOption> {
+    preset_defs()
+        .into_iter()
+        .map(|d| {
+            let mut cfg = AgentConfig::default();
+            cfg.kind = d.kind.to_string();
+            cfg.bin = d.bin.to_string();
+            cfg.args = d.args.iter().map(|s| s.to_string()).collect();
+            cfg.env = d.env.iter().map(|s| s.to_string()).collect();
+            cfg.output = d.output.to_string();
+            // kind 与 bin 一致时才算「能跑」；custom 空 bin 直接判定未就绪
+            let probe = probe_config(&cfg);
+            // 一律再解析一次真实路径：probe 失败时 bin 只是配置值，不能当「已找到」
+            let found = resolve_bin(Kind::parse(d.kind).unwrap_or(Kind::Custom), &cfg)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let message = if probe.ok {
+                String::new()
+            } else if d.bin.is_empty() {
+                "自定义 CLI 还没有可执行文件：先装好，再把 bin 填成命令名或完整路径".to_string()
+            } else if found.is_empty() {
+                format!("没有找到 {}：可能未安装，或装了但不在 PATH 上", d.bin)
+            } else {
+                // 找到了可执行文件但仍然不可用（例如 qoder 未登录）
+                probe.message.clone()
+            };
+            PresetOption {
+                id: d.id.to_string(),
+                label: d.label.to_string(),
+                kind: d.kind.to_string(),
+                bin: d.bin.to_string(),
+                args: cfg.args.clone(),
+                env: cfg.env.clone(),
+                output: d.output.to_string(),
+                install: d.install.to_string(),
+                login: d.login.to_string(),
+                note: d.note.to_string(),
+                docs: d.docs.to_string(),
+                ok: probe.ok,
+                version: probe.version,
+                message,
+                found,
+            }
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -992,8 +1415,77 @@ mod tests {
         assert_eq!(Kind::parse("OpenCode"), Some(Kind::OpenCode));
         assert_eq!(Kind::parse(" qoder "), Some(Kind::Qoder));
         assert_eq!(Kind::parse("qodercli"), Some(Kind::Qoder));
+        assert_eq!(Kind::parse("custom"), Some(Kind::Custom));
+        assert_eq!(Kind::parse("自定义"), Some(Kind::Custom));
         assert_eq!(Kind::parse("claude"), None);
         assert_eq!(Kind::parse(""), None);
+    }
+
+    #[test]
+    fn custom_args_fill_placeholders() {
+        let mut c = cfg("custom");
+        c.bin = "crush".into();
+        c.model = "claude-sonnet".into();
+        c.args = vec![
+            "run".into(),
+            "--model".into(),
+            "{model}".into(),
+            "{prompt}".into(),
+            "{session}".into(),
+        ];
+        let args = build_args_with(Kind::Custom, &c, "总结这段", "http://127.0.0.1:4096", "");
+        assert_eq!(args, vec!["run", "--model", "claude-sonnet", "总结这段"]);
+        // 空会话占位整体丢弃，不当空串传下去
+        assert_eq!(args.len(), 4);
+        // args 留空 = ["{prompt}"]
+        let mut plain = cfg("custom");
+        plain.args.clear();
+        assert_eq!(build_args(Kind::Custom, &plain, "x"), vec!["x"]);
+    }
+
+    #[test]
+    fn custom_parse_modes() {
+        assert_eq!(parse_custom("  纯文本  ", "").unwrap(), "纯文本");
+        assert!(parse_custom("   ", "text").is_err());
+        assert_eq!(
+            parse_custom(r#"{"result":"JSON 正文"}"#, "json").unwrap(),
+            "JSON 正文"
+        );
+        assert_eq!(parse_custom("不是 JSON", "json").unwrap(), "不是 JSON");
+        let ndjson = r#"{"type":"text","part":{"messageID":"m1","text":"事件流正文"}}"#;
+        assert_eq!(parse_custom(ndjson, "opencode-json").unwrap(), "事件流正文");
+        assert_eq!(
+            parse_custom(r#"{"type":"result","result":"qoder 正文"}"#, "qoder-json").unwrap(),
+            "qoder 正文"
+        );
+    }
+
+    #[test]
+    fn presets_cover_known_clis() {
+        let list = presets();
+        let ids: Vec<&str> = list.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["opencode", "qoder", "claude", "codex", "custom"]);
+        let claude = list.iter().find(|p| p.id == "claude").expect("应有 claude");
+        assert_eq!(claude.kind, "custom");
+        assert!(claude.args.iter().any(|a| a == "{prompt}"));
+        assert_eq!(claude.output, "json");
+        assert!(claude.install.contains("@anthropic-ai/claude-code"));
+        // 未就绪项必须给得出「原因 + 安装方案」，否则界面只剩一句看不懂的报错
+        for p in &list {
+            if !p.ok {
+                assert!(!p.install.is_empty(), "{} 缺安装方案", p.id);
+                assert!(!p.message.is_empty(), "{} 缺未就绪原因", p.id);
+            }
+        }
+    }
+
+    #[test]
+    fn qoder_models_are_the_ten_presets() {        let list = models("qoder", "").unwrap();
+        assert_eq!(list.len(), QODER_MODELS.len());
+        assert!(list.contains(&"auto".to_string()));
+        assert!(list.contains(&"ultimate".to_string()));
+        // custom 的候选来自配置，agent.rs 侧返回空
+        assert!(models("custom", "").unwrap().is_empty());
     }
 
     #[test]
@@ -1108,6 +1600,8 @@ mod tests {
         let mut c = cfg("qoder");
         c.token_env = "MY_TOKEN".into();
         assert_eq!(c.token_env_name(), "MY_TOKEN");
+        // custom 没有默认令牌变量
+        assert_eq!(cfg("custom").token_env_name(), "");
     }
 
     #[test]

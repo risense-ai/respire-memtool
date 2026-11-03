@@ -41,7 +41,12 @@ function messageOf(err) {
 
 const state = {
   status: null,
-  agents: [],
+  presets: [],
+  presetId: "",
+  guideCommand: "",
+  models: [],
+  modelsKey: "",
+  modelsError: "",
   tasks: new Map(),
   busy: false,
   assistant: null,
@@ -89,55 +94,189 @@ function renderStatus(status) {
     sw.disabled = !status.platform_supported;
   }
   const sel = $("agent-select");
-  if (sel && status.agent_kind) sel.value = status.agent_kind;
+  if (sel && status.agent_kind) {
+    const p = presetForStatus(status);
+    if (p) {
+      sel.value = p.id;
+      state.presetId = p.id;
+    }
+  }
   const modelInput = $("agent-model");
   if (modelInput && document.activeElement !== modelInput) {
     modelInput.value = status.model || "";
   }
   updateAgentHint();
+  renderGuide(currentPreset());
 }
 
 function updateAgentHint() {
   const hint = $("agent-hint");
   if (!hint) return;
-  const kind = state.status?.agent_kind || "";
-  const found = state.agents.find((a) => a.kind === kind);
-  if (!kind) {
+  const preset = currentPreset();
+  if (!preset) {
     hint.textContent = "选一个本机已安装的 agent，聊天与入库都用它。";
     return;
   }
-  if (found && found.ok) {
-    hint.textContent = `${kind} 可用：${found.bin || "自动探测"} ${found.version || ""}`.trim();
-  } else if (found) {
-    hint.textContent = `${kind} 未检测到：${found.message || "请确认已安装并登录"}`;
+  const modelCount = state.models.length;
+  const modelNote = modelCount ? `；模型候选 ${modelCount} 个（可下拉选或手填）` : "";
+  if (preset.ok) {
+    const ver = preset.version ? ` ${preset.version}` : "";
+    hint.textContent = `${preset.label} 可用：${preset.found || preset.bin || "自动探测"}${ver}${modelNote}`;
   } else {
-    hint.textContent = `已绑定 ${kind}；点「绑定」可重新探测。`;
+    // 详细原因放下面的「安装与配置」面板，这里只留一句，别把左栏撑爆
+    hint.textContent = `${preset.label} 未就绪：按下方「安装与配置」操作。`;
+  }
+  if (state.modelsError) {
+    hint.textContent += `（模型列表获取失败：${state.modelsError}）`;
   }
 }
 
-async function loadAgents() {
+/** 选中的预设（下拉里的 id） */
+function currentPreset() {
+  return state.presets.find((p) => p.id === state.presetId) || null;
+}
+
+/** 绑定后回显时，按 kind+bin 找对应的预设 */
+function presetForStatus(status) {
+  const kind = (status?.agent_kind || "").trim().toLowerCase();
+  const bin = (status?.agent_bin || "").trim().toLowerCase();
+  if (!kind) return null;
+  const sameKind = state.presets.filter((p) => p.kind.toLowerCase() === kind);
+  if (!sameKind.length) return null;
+  if (bin) {
+    const exact = sameKind.find((p) => p.bin.toLowerCase() === bin);
+    if (exact) return exact;
+  }
+  return sameKind[0];
+}
+
+/** 该预设最适合复制的一条命令（没有就退化为复制整段说明） */
+function guideCommandFor(preset) {
+  if (!preset) return "";
+  if (preset.id === "qoder" && preset.found) return `& "${preset.found}"`;
+  if (/^(npm|pnpm|yarn|brew|winget|scoop)\s/i.test(preset.install)) return preset.install;
+  return "";
+}
+
+/** 未就绪时显示「怎么装、怎么登录、怎么配」 */
+function renderGuide(preset) {
+  const box = $("agent-guide");
+  const title = $("agent-guide-title");
+  const body = $("agent-guide-body");
+  if (!box || !title || !body) return;
+  state.guideCommand = "";
+  if (!preset || preset.ok) {
+    box.classList.add("hidden");
+    body.textContent = "";
+    title.textContent = "";
+    return;
+  }
+  const lines = [];
+  if (preset.message) lines.push(`原因：${preset.message}`);
+  if (preset.install) lines.push(`安装：${preset.install}`);
+  if (preset.login) lines.push(`登录：${preset.login}`);
+  if (preset.id === "qoder" && preset.found) {
+    lines.push(`启动：& "${preset.found}"`);
+  }
+  if (preset.note) lines.push(`说明：${preset.note}`);
+  if (preset.kind === "custom" && preset.args?.length) {
+    lines.push(`参数：${preset.args.join(" ")}（输出解析 ${preset.output || "text"}）`);
+  }
+  if (preset.found) lines.push(`已找到：${preset.found}`);
+  if (preset.docs) lines.push(`文档：${preset.docs}`);
+  lines.push("装好后点「重新检测」，再点「绑定」。");
+  state.guideCommand = guideCommandFor(preset);
+  title.textContent = `${preset.label} · 安装与配置`;
+  body.textContent = lines.join("\n");
+  box.classList.remove("hidden");
+}
+
+/** 复制安装命令（没有安装命令时退化为复制整段说明） */
+async function copyGuideCommand() {
+  const text = state.guideCommand || $("agent-guide-body")?.textContent || "";
+  if (!text) return;
+  const btn = $("btn-guide-copy");
   try {
-    const list = await call("agent_list");
-    state.agents = Array.isArray(list) ? list : [];
-    const sel = $("agent-select");
-    if (!sel) return;
-    const current = state.status?.agent_kind || "";
-    sel.innerHTML = "";
-    for (const a of state.agents) {
-      const opt = document.createElement("option");
-      opt.value = a.kind;
-      opt.textContent = a.ok ? `${a.kind} · ${a.version}` : `${a.kind} · 未检测到`;
-      opt.disabled = !a.ok && a.kind !== current;
-      sel.append(opt);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.append(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
     }
-    if (current && !state.agents.some((a) => a.kind === current)) {
-      const opt = document.createElement("option");
-      opt.value = current;
-      opt.textContent = `${current} · 未检测到`;
-      sel.append(opt);
+    if (btn) {
+      const old = btn.textContent;
+      btn.textContent = "已复制";
+      window.setTimeout(() => (btn.textContent = old), 1200);
     }
-    if (current) sel.value = current;
+  } catch (err) {
+    appendMessage("error", "复制失败：" + messageOf(err));
+  }
+}
+
+/** 拉取某 agent 的模型候选，填进 datalist；结果按 kind+bin 缓存 */
+async function loadModels(kind, bin) {
+  const listEl = $("agent-model-options");
+  if (!listEl) return [];
+  const key = `${kind || ""}|${bin || ""}`;
+  if (!kind) {
+    state.models = [];
+    state.modelsError = "";
+    state.modelsKey = "";
+    listEl.innerHTML = "";
     updateAgentHint();
+    return [];
+  }
+  if (state.modelsKey === key) return state.models;
+  try {
+    const list = await call("agent_models", { kind, bin: bin || "" });
+    state.models = Array.isArray(list) ? list : [];
+    state.modelsError = "";
+  } catch (err) {
+    state.models = [];
+    state.modelsError = messageOf(err);
+  }
+  state.modelsKey = key;
+  listEl.innerHTML = "";
+  for (const m of state.models) {
+    const opt = document.createElement("option");
+    opt.value = m;
+    listEl.append(opt);
+  }
+  updateAgentHint();
+  return state.models;
+}
+
+async function loadPresets() {
+  const sel = $("agent-select");
+  try {
+    const list = await call("agent_presets");
+    state.presets = Array.isArray(list) ? list : [];
+    if (!sel) return;
+    // 记住用户正在看的项；首次按当前绑定回填
+    const keep = state.presetId;
+    const bound = presetForStatus(state.status);
+    sel.innerHTML = "";
+    for (const p of state.presets) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.ok
+        ? `${p.label} · ${p.version || "已安装"}`
+        : `${p.label} · 未就绪`;
+      opt.title = p.ok ? p.found || p.bin : p.message || "";
+      sel.append(opt);
+    }
+    const next = keep || bound?.id || state.presets[0]?.id || "";
+    if (next) sel.value = next;
+    state.presetId = sel.value;
+    updateAgentHint();
+    renderGuide(currentPreset());
+    // 模型候选可能较慢（opencode 要起子进程），不阻塞界面
+    const p = currentPreset();
+    void loadModels(p?.kind || "", p?.bin || "");
   } catch (err) {
     const hint = $("agent-hint");
     if (hint) hint.textContent = "读取 agent 列表失败：" + messageOf(err);
@@ -147,17 +286,33 @@ async function loadAgents() {
 async function applyAgent() {
   const sel = $("agent-select");
   if (!sel || !sel.value) return;
-  const kind = sel.value;
+  const preset = currentPreset();
+  if (!preset) return;
   const prev = state.status?.agent_kind || "";
-  // 切换 agent 时清空模型：opencode 是 provider/model，qoder 是 auto/efficient 档位，不能混用
-  const switched = kind !== prev;
+  // 切换来源时清空模型：opencode 是 provider/model，qoder 是档位，claude 是模型名，不能混用
+  const switched = preset.kind !== prev;
   const model = switched ? "" : ($("agent-model")?.value || "").trim();
-  const known = state.agents.find((a) => a.kind === kind);
-  const bin = known?.bin || "";
+  if (!preset.ok) {
+    appendMessage(
+      "error",
+      `${preset.label} 未就绪：${preset.message || "请按左侧面板安装后再绑定"}`
+    );
+    renderGuide(preset);
+    return;
+  }
+  // 先把该 agent 的模型候选换好，避免下拉里还是上一个 agent 的模型
+  void loadModels(preset.kind, preset.bin);
   try {
-    const status = await call("kb_set_agent", { kind, bin, model });
+    const status = await call("kb_set_agent", {
+      kind: preset.kind,
+      bin: preset.bin,
+      model,
+      args: preset.args || [],
+      env: preset.env || [],
+      output: preset.output || "",
+    });
     renderStatus(status);
-    const label = `已绑定 ${kind}${status.model ? " · " + status.model : "（默认模型）"}`;
+    const label = `已绑定 ${preset.label}${status.model ? " · " + status.model : "（默认模型）"}`;
     setChip(label, "ok");
     appendMessage("tool", `AI 智能体已切换为 ${label}`);
   } catch (err) {
@@ -541,11 +696,36 @@ async function init() {
   });
   $("context-menu")?.addEventListener("change", (e) => void toggleContextMenu(!!e.target.checked));
   $("btn-agent-save")?.addEventListener("click", () => void applyAgent());
-  $("agent-select")?.addEventListener("change", () => void applyAgent());
+  $("btn-agent-refresh")?.addEventListener("click", () => void loadPresets());
+  $("btn-guide-copy")?.addEventListener("click", () => void copyGuideCommand());
+  // 换来源只预览说明，不立即绑定；确认后点「绑定」
+  $("agent-select")?.addEventListener("change", () => {
+    const sel = $("agent-select");
+    state.presetId = sel?.value || "";
+    const preset = currentPreset();
+    state.modelsKey = ""; // 换来源必须重拉模型候选
+    state.models = [];
+    // 模型语义按来源不同（provider/model、档位、模型名），换来源就清空，别把上一个带过去
+    if (preset && preset.kind !== (state.status?.agent_kind || "")) {
+      const modelInput = $("agent-model");
+      if (modelInput) modelInput.value = "";
+    }
+    updateAgentHint();
+    renderGuide(preset);
+    void loadModels(preset?.kind || "", preset?.bin || "");
+  });
   $("agent-model")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       void applyAgent();
+    }
+  });
+  // 点进模型框时若候选为空（首次加载失败/未加载），补拉一次
+  $("agent-model")?.addEventListener("focus", () => {
+    const preset = currentPreset();
+    if (!preset) return;
+    if (state.modelsKey !== `${preset.kind}|${preset.bin}`) {
+      void loadModels(preset.kind, preset.bin);
     }
   });
 
@@ -587,7 +767,7 @@ async function init() {
   } catch (err) {
     setChip(messageOf(err), "err");
   }
-  await loadAgents();
+  await loadPresets();
   try {
     const tasks = await call("kb_tasks");
     if (Array.isArray(tasks)) tasks.forEach(upsertTask);

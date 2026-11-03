@@ -142,13 +142,13 @@ max_chars = 8000          # 送入模型的内容上限（超长直接拒绝）
 # 非空 = 直接用 agent（opencode 会作为 --attach 目标，例如已 `opencode serve` 在 4096）。
 agent_endpoint = ""
 
-# ---- 层次二：agent headless 调用（opencode / Qoder）----
+# ---- 层次二：agent headless 调用（opencode / Qoder / 自定义 CLI）----
 # memTools 用「子进程 + 参数数组」直调 agent CLI，不拼 shell 字符串（防注入）。
 # 默认工作目录是 {系统临时目录}/memtools-agent，避免 agent 把 memTools 仓库当项目。
 [processor.agent]
 enabled = false          # 默认走层次一；小窗「来源」下拉选 opencode/Qoder 会自动启用（写入 processor.json）
-kind = "opencode"         # opencode | qoder
-bin = ""                  # 留空自动探测：PATH → 已知安装位置；也可填完整路径
+kind = "opencode"         # opencode | qoder | custom
+bin = ""                  # 留空自动探测：PATH → 已知安装位置；也可填完整路径（custom 必填）
 model = ""                # opencode: provider/model（如 opencode/big-pickle）；qoder: auto/efficient/qmodel…
 agent = ""                # opencode --agent（用自定义 agent 限定工具/权限，建议配一个纯文本 agent）
 timeout_secs = 240        # agent 冷启动慢，超时后杀进程并明确报错
@@ -161,11 +161,29 @@ disallowed_tools = ""     # qoder --disallowed-tools（如 "Bash,Edit,Write"，�
 extra_args = []           # 追加参数（原样传给 CLI）
 token = ""                # 令牌（勿提交到公开仓库）；非空则注入到 token_env
 token_env = ""            # 令牌环境变量名，留空按 kind：qoder → QODER_PERSONAL_ACCESS_TOKEN
+# ---- 以下四项仅 kind = "custom" 使用：用户装了什么 CLI 就配什么 ----
+# args：参数模板，数组里每个元素是一个 argv；留空等价于 ["{prompt}"]。
+#   占位符：{prompt} {model} {session} {endpoint} {workdir} {agent}；替换后为空串的元素会被丢弃。
+#   例（Claude Code 风格）：args = ["-p", "{prompt}", "--output-format", "json", "--model", "{model}"]
+args = []
+# env：附加环境变量，每个元素写成 KEY=VALUE
+env = []
+# models：AI 窗口模型下拉的候选（仍可手填）；留空则只给自由输入
+models = []
+# output：输出解析方式 text | json | opencode-json | qoder-json（默认 text = 原样取 stdout）
+output = ""
 # 说明：
 # - opencode 需先在 opencode.jsonc 配好 provider/model；`opencode run --format json` 输出事件流。
-# - Qoder 需先 `qodercli /login`（或设 QODER_PERSONAL_ACCESS_TOKEN）；
+# - Qoder 需先登录：运行 `qodercli` 后输入 `/login`（或设 QODER_PERSONAL_ACCESS_TOKEN）；
 #   其 CLI 通常位于 <Qoder 安装目录>/resources/app/resources/bin/x86_64_windows/qodercli.exe，
 #   不在 PATH 时把 bin 填成完整路径即可。
+# - custom 示例（把任意 CLI 包成 agent）：
+#   kind = "custom"
+#   bin = "crush"                      # 完整路径或 PATH 上的命令名
+#   args = ["run", "--model", "{model}", "{prompt}"]
+#   env = ["CI=1"]
+#   models = ["claude-sonnet", "gpt-5"]
+#   output = "json"                    # 或 text / opencode-json / qoder-json
 # - 排查：curl -H "X-MemTools-Token: <token>" http://127.0.0.1:17650/agent
 
 # prompt 模板可逐条覆盖（留空 = 用内置默认）。支持 {content} 与 {lang} 占位符。

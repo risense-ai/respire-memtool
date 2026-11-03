@@ -151,6 +151,33 @@ body { display: flex; flex-direction: column; }
 
 .hint { font-size: 11px; color: var(--text-faint); line-height: 1.5; }
 
+.guide {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 8px 10px;
+  margin: 2px 0 8px;
+}
+.guide.hidden { display: none; }
+.guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.guide pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-faint);
+}
+
 .tasks { display: flex; flex-direction: column; gap: 8px; overflow: auto; min-height: 0; }
 .task {
   border: 1px solid var(--border);
