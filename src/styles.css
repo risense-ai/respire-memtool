@@ -141,8 +141,7 @@ html, body {
 .input-wrap.hidden { display: none; }
 #memory-input {
   width: 100%;
-  min-height: 72px;
-  max-height: 180px;
+  min-height: clamp(72px, 12vh, 220px);
   padding: 12px 14px 8px;
   border: none;
   outline: none;
@@ -208,6 +207,7 @@ html, body {
 }
 .proc-source-opts {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 .proc-source-btn {
@@ -443,7 +443,7 @@ html, body {
 
 /* 层二：分类树（人域 / AI域 分组） */
 .tree-groups {
-  max-height: 218px;
+  max-height: clamp(180px, 32vh, 460px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -558,6 +558,7 @@ html, body {
 }
 .view-tab {
   flex: 1;
+  min-width: 0;
   padding: 6px 10px;
   border: none;
   border-radius: 999px;
@@ -566,6 +567,9 @@ html, body {
   font-size: 11.5px;
   font-weight: 600;
   font-family: var(--font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
   transition: all 0.18s ease;
 }
@@ -954,6 +958,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 8px;
 }
 .switch-row {
   display: flex;
@@ -1258,6 +1264,10 @@ html, body {
   flex: 0 0 auto;
   margin-top: 2px;
 }
+.settings-row .mini-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .settings-status {
   min-height: 15px;
   font-size: 10.5px;
@@ -1408,6 +1418,8 @@ html, body {
   top: calc(100% + 6px);
   z-index: 30;
   min-width: 180px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -1752,7 +1764,7 @@ button:focus-visible, .mem-item:focus-visible { outline: 2px solid var(--accent)
 .view-switch { display: inline-flex; gap: 3px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; }
 .view-switch .mini-btn { border-color: transparent; white-space: nowrap; }
 .memory-status { flex: 0 0 auto; text-align: left; white-space: normal; overflow-wrap: anywhere; margin-bottom: 8px; line-height: 1.5; min-height: 16px; }
-.browse-cats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; max-height: 116px; scrollbar-gutter: stable; padding-right: 2px; }
+.browse-cats { display: grid; grid-template-columns: repeat(auto-fill, minmax(82px, 1fr)); gap: 5px; max-height: clamp(96px, 20vh, 190px); overflow-y: auto; scrollbar-gutter: stable; padding-right: 2px; }
 .cat-chip { display: flex; align-items: center; justify-content: space-between; gap: 3px; padding: 4px 6px; min-width: 0; border-radius: 6px; line-height: 1.2; font-weight: 500; }
 .cat-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cat-chip small { font: 9px var(--mono); color: var(--text-dim); }
@@ -1769,7 +1781,6 @@ button:focus-visible, .mem-item:focus-visible { outline: 2px solid var(--accent)
 .mem-item.path-context { border-style: dashed; background: transparent; }
 .mem-item.path-context .mem-meta { display: none; }
 .mem-item.path-context .mem-title { color: var(--text-dim); font-weight: 500; font-size: 11.5px; }
-@media (max-width: 420px) { .browse-cats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (prefers-color-scheme: light) {
   :root {
     --bg-base: #f5f6f8; --bg-input: #f0f2f5; --bg-glass-strong: #fbfcfd;
@@ -1808,3 +1819,134 @@ button:focus-visible, .mem-item:focus-visible { outline: 2px solid var(--accent)
 .mem-fragment small { display:block; opacity:.75; margin-bottom:3px; }
 .mem-item mark { background:#e9c86a; color:#202433; border-radius:2px; }
 .mem-item.expanded .mem-fragments { display:none; }
+
+/* ============================================================
+   窗口自适应（主窗可手动缩放：360×400 → 任意大屏）
+   - 手柄：无边框窗口的 8 向缩放热区，只压在外壳内边距上
+   - 断点：≤430 极窄 / ≤680 窄 / ≥960 双栏 / ≥1180 宽屏
+   - 收折：窄窗把图谱次要按钮收进「显示」菜单，功能不丢
+   ============================================================ */
+
+/* ---------------- 缩放手柄 ---------------- */
+.win-grips {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+.win-grip {
+  position: absolute;
+  pointer-events: auto;
+  transition: background-color 0.15s ease;
+}
+.win-grip:hover { background: rgba(124, 92, 255, 0.3); }
+.grip-n, .grip-s { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+.grip-n { top: 0; }
+.grip-s { bottom: 0; }
+.grip-w, .grip-e { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+.grip-w { left: 0; }
+.grip-e { right: 0; }
+.grip-nw, .grip-ne, .grip-sw, .grip-se { width: 12px; height: 12px; }
+.grip-nw { left: 0; top: 0; cursor: nwse-resize; }
+.grip-se { right: 0; bottom: 0; cursor: nwse-resize; }
+.grip-ne { right: 0; top: 0; cursor: nesw-resize; }
+.grip-sw { left: 0; bottom: 0; cursor: nesw-resize; }
+
+/* ---------------- 写入视图的双栏骨架 ---------------- */
+.write-primary,
+.write-secondary { min-width: 0; }
+.write-secondary { display: flex; flex-direction: column; }
+
+/* ---------------- 图谱：窄窗收折次要动作 ---------------- */
+.graph-menu-more { display: none; flex-direction: column; gap: 2px; }
+.graph-menu-divider { height: 1px; margin: 2px 0 4px; background: var(--border); }
+.graph-menu-action {
+  width: 100%;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.graph-menu-action:hover { background: var(--button-hover); color: var(--text); }
+.graph-menu-action.active { background: var(--accent-soft); color: var(--text); }
+
+/* ---------------- 窄窗（≤ 430） ---------------- */
+@media (max-width: 430px) {
+  .shell { padding: 10px; }
+  .brand-sub { display: none; }
+  .view-tabs { gap: 3px; padding: 2px; }
+  .view-tab { padding: 6px 4px; font-size: 11px; }
+  .input-meta .hint { display: none; }
+  .switch-state { display: none; }
+  .statusbar { justify-content: flex-start; }
+  .ext-btn { margin-left: 0; }
+  .graph-toolbar { flex-wrap: wrap; row-gap: 6px; }
+  .graph-status { flex: 1 0 100%; }
+  .graph-actions { flex: 1 0 100%; justify-content: flex-start; }
+  .graph-detail { width: calc(100% - 20px); max-height: 46%; }
+}
+
+/* 极窄：视图切换换成 3×2，读得清也不溢出 */
+@media (max-width: 400px) {
+  .view-tabs { flex-wrap: wrap; border-radius: 12px; }
+  .view-tab { flex: 1 1 calc(33.333% - 4px); border-radius: 8px; padding: 6px 2px; }
+  .statusbar { gap: 6px; }
+  .statusbar .mini-btn { padding: 4px 8px; }
+}
+
+/* ---------------- 窄窗（≤ 680）：图谱按钮收进菜单 ---------------- */
+@media (max-width: 680px) {
+  .graph-opt-wide { display: none; }
+  .graph-menu-more { display: flex; }
+  .graph-actions .mini-btn { padding: 4px 7px; }
+  .graph-switch { padding: 0 2px; }
+}
+
+/* ---------------- 矮窗：压缩纵向留白，保证内容区可用 ---------------- */
+@media (max-height: 520px) {
+  .shell { padding-top: 8px; padding-bottom: 8px; }
+  .titlebar { padding-bottom: 6px; }
+  .view-tabs { margin-bottom: 6px; }
+  .statusbar { padding-top: 6px; }
+  #memory-input { min-height: 60px; }
+  .graph-toolbar, .graph-search-bar { margin-bottom: 6px; }
+}
+
+/* ---------------- 宽窗（≥ 960）：写入视图双栏 ---------------- */
+@media (min-width: 960px) {
+  .shell { padding: 16px 18px; }
+  .write-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+    column-gap: 20px;
+    align-items: start;
+  }
+  .write-secondary {
+    border-left: 1px solid var(--border);
+    padding-left: 18px;
+  }
+  .write-secondary > .menu-level:first-of-type { margin-top: 0; }
+  #memory-input { min-height: clamp(120px, 30vh, 360px); }
+  .view-tab { font-size: 12px; padding: 7px 12px; }
+  .browse-list, #remind-groups { max-width: 880px; }
+}
+
+/* ---------------- 宽窗（≥ 1180）：图谱与详情给足空间 ---------------- */
+@media (min-width: 1180px) {
+  .graph-detail { width: min(440px, 42%); max-height: 58%; }
+  .graph-status { font-size: 11px; }
+}
+
+/* ---------------- 图谱图例按宽度分级收起 ---------------- */
+@media (max-width: 900px) {
+  .graph-legend .lg-hint { display: none; }
+}
+@media (max-width: 560px) {
+  .graph-legend .lg-size { display: none; }
+  .graph-legend { gap: 4px 8px; padding: 4px 7px; font-size: 9px; }
+}

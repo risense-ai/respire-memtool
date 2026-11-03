@@ -35,93 +35,99 @@
     </nav>
 
     <!-- 输入区 -->
-    <main class="content" id="view-write">
-      <div class="input-modes" id="input-modes">
-        <button class="mode-btn active" data-mode="free">自由文本</button>
-        <button class="mode-btn" data-mode="sections">三段模板</button>
-      </div>
-
-      <div class="input-wrap">
-        <textarea id="memory-input" rows="3" placeholder="记录此刻的想法 / 事件 / 决策…&#10;（主区条目建议包含：【前因】【行为】【后果】）" spellcheck="false"></textarea>
-      </div>
-
-      <!-- 三段模板（仅「三段模板」模式显示） -->
-      <div class="sections-wrap hidden" id="sections-wrap">
-        <label class="sec-field">
-          <span class="sec-tag">前因</span>
-          <textarea id="sec-cause" rows="2" placeholder="背景 / 起因（可留空）" spellcheck="false"></textarea>
-        </label>
-        <label class="sec-field">
-          <span class="sec-tag">行为</span>
-          <textarea id="sec-action" rows="2" placeholder="做了什么（必填）" spellcheck="false"></textarea>
-        </label>
-        <label class="sec-field">
-          <span class="sec-tag">后果</span>
-          <textarea id="sec-effect" rows="2" placeholder="结果 / 结论（可留空）" spellcheck="false"></textarea>
-        </label>
-      </div>
-
-      <div class="input-meta">
-        <span id="char-count">0 字</span>
-        <button id="process-btn" class="mini-btn process-btn" title="梳理内容（总结/结构化/起标题/翻译/提取/润色）">梳理</button>
-        <span class="hint">Ctrl+Enter 提交 · Esc 关闭</span>
-      </div>
-
-      <!-- 梳理任务条（P10：层次一 LLM / 层次二 agent） -->
-      <div class="process-bar hidden" id="process-bar">
-        <!-- 来源切换（模型 / opencode / Qoder / 关闭）：点选即生效，不用改 config.toml -->
-        <div class="proc-source" id="proc-source">
-          <span class="proc-source-label">来源</span>
-          <div class="proc-source-opts" id="proc-source-opts"></div>
-          <span class="proc-source-hint" id="proc-source-hint"></span>
+    <main class="content write-content" id="view-write">
+      <!-- 左栏：写什么（窄窗单列，宽窗与「存到哪里」并排） -->
+      <div class="write-primary">
+        <div class="input-modes" id="input-modes">
+          <button class="mode-btn active" data-mode="free">自由文本</button>
+          <button class="mode-btn" data-mode="sections">三段模板</button>
         </div>
-        <div class="proc-tasks">
-          <button class="process-task" data-task="summarize">总结成记忆</button>
-          <button class="process-task" data-task="structure">结构化</button>
-          <button class="process-task" data-task="title">起标题</button>
-          <button class="process-task" data-task="translate">翻译</button>
-          <button class="process-task" data-task="extract">提取要点</button>
-          <button class="process-task" data-task="polish">润色</button>
+
+        <div class="input-wrap">
+          <textarea id="memory-input" rows="3" placeholder="记录此刻的想法 / 事件 / 决策…&#10;（主区条目建议包含：【前因】【行为】【后果】）" spellcheck="false"></textarea>
+        </div>
+
+        <!-- 三段模板（仅「三段模板」模式显示） -->
+        <div class="sections-wrap hidden" id="sections-wrap">
+          <label class="sec-field">
+            <span class="sec-tag">前因</span>
+            <textarea id="sec-cause" rows="2" placeholder="背景 / 起因（可留空）" spellcheck="false"></textarea>
+          </label>
+          <label class="sec-field">
+            <span class="sec-tag">行为</span>
+            <textarea id="sec-action" rows="2" placeholder="做了什么（必填）" spellcheck="false"></textarea>
+          </label>
+          <label class="sec-field">
+            <span class="sec-tag">后果</span>
+            <textarea id="sec-effect" rows="2" placeholder="结果 / 结论（可留空）" spellcheck="false"></textarea>
+          </label>
+        </div>
+
+        <div class="input-meta">
+          <span id="char-count">0 字</span>
+          <button id="process-btn" class="mini-btn process-btn" title="梳理内容（总结/结构化/起标题/翻译/提取/润色）">梳理</button>
+          <span class="hint">Ctrl+Enter 提交 · Esc 关闭</span>
+        </div>
+
+        <!-- 梳理任务条（P10：层次一 LLM / 层次二 agent） -->
+        <div class="process-bar hidden" id="process-bar">
+          <!-- 来源切换（模型 / opencode / Qoder / 关闭）：点选即生效，不用改 config.toml -->
+          <div class="proc-source" id="proc-source">
+            <span class="proc-source-label">来源</span>
+            <div class="proc-source-opts" id="proc-source-opts"></div>
+            <span class="proc-source-hint" id="proc-source-hint"></span>
+          </div>
+          <div class="proc-tasks">
+            <button class="process-task" data-task="summarize">总结成记忆</button>
+            <button class="process-task" data-task="structure">结构化</button>
+            <button class="process-task" data-task="title">起标题</button>
+            <button class="process-task" data-task="translate">翻译</button>
+            <button class="process-task" data-task="extract">提取要点</button>
+            <button class="process-task" data-task="polish">润色</button>
+          </div>
+        </div>
+
+        <!-- task 类型：【触发】行（日期不猜，缺失时询问） -->
+        <div class="trigger-row hidden" id="trigger-row">
+          <span class="trigger-label">【触发】</span>
+          <input id="trigger-input" type="text" placeholder="2026-10-20 10:00 或 可核实前提（勿猜）" spellcheck="false" />
+        </div>
+
+        <!-- 自动化提示词（仅自动化开启时显示） -->
+        <div class="hint-wrap hidden" id="hint-wrap">
+          <input id="hint-input" type="text" placeholder="项目名 / 关键词（可选，提升判重准确度）" spellcheck="false" />
         </div>
       </div>
 
-      <!-- task 类型：【触发】行（日期不猜，缺失时询问） -->
-      <div class="trigger-row hidden" id="trigger-row">
-        <span class="trigger-label">【触发】</span>
-        <input id="trigger-input" type="text" placeholder="2026-10-20 10:00 或 可核实前提（勿猜）" spellcheck="false" />
+      <!-- 右栏：存到哪里（窄窗照旧排在下方的同一列） -->
+      <div class="write-secondary">
+        <div id="write-destination" class="browse-status" role="status"></div>
+        <!-- 层一：去向 -->
+        <section class="menu-level" id="level-1">
+          <div class="level-label">存到哪里</div>
+          <div class="seg">
+            <button class="seg-btn active" data-target="main">主区 <em>important</em></button>
+            <button class="seg-btn" data-target="journal">日记 <em>trivial</em></button>
+          </div>
+        </section>
+
+        <!-- 层二：分类树（仅主区） -->
+        <section class="menu-level hidden" id="level-2">
+          <div class="level-label">挂哪棵树</div>
+          <input id="parent-query" class="memory-query" type="search" placeholder="搜索具体上级节点的标题或 ID" aria-label="选择上级节点" />
+          <div id="parent-results" class="tree-chips"></div>
+          <div id="tree-groups" class="tree-groups"></div>
+        </section>
+
+        <!-- 层三：type（仅主区，可选） -->
+        <section class="menu-level hidden" id="level-3">
+          <div class="level-label">性质标记 <em class="optional">可选</em></div>
+          <div id="type-pills" class="type-pills"></div>
+        </section>
+
+        <!-- 结果 / 错误区 -->
+        <section id="result-area" class="result-area hidden"></section>
       </div>
-
-      <!-- 自动化提示词（仅自动化开启时显示） -->
-      <div class="hint-wrap hidden" id="hint-wrap">
-        <input id="hint-input" type="text" placeholder="项目名 / 关键词（可选，提升判重准确度）" spellcheck="false" />
-      </div>
-
-      <div id="write-destination" class="browse-status" role="status"></div>
-      <!-- 层一：去向 -->
-      <section class="menu-level" id="level-1">
-        <div class="level-label">存到哪里</div>
-        <div class="seg">
-          <button class="seg-btn active" data-target="main">主区 <em>important</em></button>
-          <button class="seg-btn" data-target="journal">日记 <em>trivial</em></button>
-        </div>
-      </section>
-
-      <!-- 层二：分类树（仅主区） -->
-      <section class="menu-level hidden" id="level-2">
-        <div class="level-label">挂哪棵树</div>
-        <input id="parent-query" class="memory-query" type="search" placeholder="搜索具体上级节点的标题或 ID" aria-label="选择上级节点" />
-        <div id="parent-results" class="tree-chips"></div>
-        <div id="tree-groups" class="tree-groups"></div>
-      </section>
-
-      <!-- 层三：type（仅主区，可选） -->
-      <section class="menu-level hidden" id="level-3">
-        <div class="level-label">性质标记 <em class="optional">可选</em></div>
-        <div id="type-pills" class="type-pills"></div>
-      </section>
-
-      <!-- 结果 / 错误区 -->
-      <section id="result-area" class="result-area hidden"></section>
     </main>
 
     <!-- 全部有效记忆：列表 / 真实父子树 / 即时筛选 -->
@@ -228,12 +234,19 @@
                   title="单次聚焦最多点亮多少节点；整层放不下时少显示一层"
                 />
               </div>
+              <!-- 窄窗时三个次要动作收进这里，避免工具栏挤成两行；宽窗由 CSS 隐藏 -->
+              <div class="graph-menu-more">
+                <div class="graph-menu-divider"></div>
+                <button type="button" class="graph-menu-action" data-graph-action="rotate">自动旋转</button>
+                <button type="button" class="graph-menu-action" data-graph-action="rebuild">重排布局</button>
+                <button type="button" class="graph-menu-action" data-graph-action="reload">重新加载</button>
+              </div>
             </div>
           </div>
           <button id="graph-zoom" class="mini-btn" title="视角自适应">适配</button>
-          <button id="graph-rotate" class="mini-btn" title="自动旋转">自转</button>
-          <button id="graph-rebuild" class="mini-btn" title="重新计算 PCA 布局">重排</button>
-          <button id="graph-reload" class="mini-btn" title="重新拉取全量快照">重载</button>
+          <button id="graph-rotate" class="mini-btn graph-opt-wide" title="自动旋转">自转</button>
+          <button id="graph-rebuild" class="mini-btn graph-opt-wide" title="重新计算 PCA 布局">重排</button>
+          <button id="graph-reload" class="mini-btn graph-opt-wide" title="重新拉取全量快照">重载</button>
           <button id="graph-expand" class="mini-btn" title="放大 / 还原窗口">放大</button>
         </div>
       </div>
@@ -256,7 +269,7 @@
         <div class="graph-legend" id="graph-legend">
           <span><i class="lg-line parent"></i>父子</span>
           <span><i class="lg-line core"></i>共现</span>
-          <span><i class="lg-dot"></i>大小=召回热度</span>
+          <span class="lg-size"><i class="lg-dot"></i>大小=召回热度</span>
           <span class="lg-hint">拖拽旋转 · 滚轮缩放 · 悬停聚焦 · 点击锁定</span>
         </div>
       </div>
@@ -357,6 +370,18 @@
       <div class="update-actions">
         <button id="update-install" class="mini-btn primary hidden">下载并重启</button>
       </div>
+    </div>
+
+    <!-- 无边框窗口的缩放手柄（8 向）：只压在外壳内边距上，不挡内容 -->
+    <div class="win-grips" id="win-grips" aria-hidden="true">
+      <div class="win-grip grip-n" data-resize="North"></div>
+      <div class="win-grip grip-s" data-resize="South"></div>
+      <div class="win-grip grip-w" data-resize="West"></div>
+      <div class="win-grip grip-e" data-resize="East"></div>
+      <div class="win-grip grip-nw" data-resize="NorthWest"></div>
+      <div class="win-grip grip-ne" data-resize="NorthEast"></div>
+      <div class="win-grip grip-sw" data-resize="SouthWest"></div>
+      <div class="win-grip grip-se" data-resize="SouthEast"></div>
     </div>
   </div>
   <script type="module" src="/src/main.js"></script>

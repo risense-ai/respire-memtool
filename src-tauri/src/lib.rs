@@ -40,7 +40,9 @@ use rsrs_client::{RememberRequest, RsrsClient, TaxonomyItem};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WindowEvent,
+};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// 全局状态
@@ -53,6 +55,17 @@ struct AppState {
     processor: Arc<processor_settings::ProcessorSettings>,
     /// 知识库入库 / AI 窗口（P13）
     kb: Arc<kb_service::KbService>,
+    /// 图谱放大/还原的窗口尺寸记忆（逻辑像素）
+    graph_window: std::sync::Mutex<GraphWindowMemory>,
+}
+
+/// 图谱「放大」前的尺寸，以及放大后的目标尺寸。
+/// 退出图谱时若当前尺寸仍等于放大目标，说明用户没手动拖过，才还原；
+/// 用户自己拖过就尊重他改后的尺寸。
+#[derive(Default)]
+struct GraphWindowMemory {
+    previous: Option<(u32, u32)>,
+    expanded: Option<(u32, u32)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +647,8 @@ fn runtime_status(state: tauri::State<'_, AppState>) -> RuntimeStatus {
 
 #[tauri::command]
 fn hide_window(app: AppHandle) {
+    // 隐藏前落盘位置与大小：用户拖过窗口后点 ✕ / Esc 也能记住
+    save_window_position(&app);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
@@ -1647,7 +1662,9 @@ async fn graph_rebuild_layout(
         .map_err(|e| format!("图谱重排线程失败: {e}"))?
 }
 
-/// 图谱视图放大/还原主窗（绕过 resizable:false 的程序化尺寸切换）。
+/// 图谱视图「放大 / 还原」主窗。
+/// 放大时按当前显示器工作区算尺寸；放大前记下用户当时的窗口大小，
+/// 还原时若用户没再手动拖过就回到那个尺寸，否则保持他改后的尺寸。
 #[tauri::command]
 fn set_graph_window(
     app: AppHandle,
@@ -1657,27 +1674,61 @@ fn set_graph_window(
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| "主窗口不存在".to_string())?;
+    let scale = win.scale_factor().map_err(|e| e.to_string())?;
+    let current = win
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(scale);
+    let current = (
+        current.width.round().max(1.0) as u32,
+        current.height.round().max(1.0) as u32,
+    );
     if expanded {
         let (w, h) = match win.current_monitor().map_err(|e| e.to_string())? {
             Some(m) => {
-                let s = m.size();
+                // 用工作区（排除任务栏）并按显示器缩放换算成逻辑像素
+                let area = m.work_area().size.to_logical::<f64>(m.scale_factor());
                 (
-                    (s.width as f64 * 0.92).min(1180.0).max(520.0),
-                    (s.height as f64 * 0.90).min(860.0).max(400.0),
+                    (area.width * 0.94).clamp(520.0, 1180.0),
+                    (area.height * 0.92).clamp(460.0, 900.0),
                 )
             }
             None => (1080.0, 760.0),
         };
-        win.set_size(PhysicalSize::new(w as u32, h as u32))
-            .map_err(|e| e.to_string())?;
-        win.center().map_err(|e| e.to_string())?;
+        // 「放大」只放大不缩小：用户已经把窗口拖得比目标更大时保持原样
+        let target_w = w.max(current.0 as f64);
+        let target_h = h.max(current.1 as f64);
+        let target = (target_w.round() as u32, target_h.round() as u32);
+        if let Ok(mut memory) = state.graph_window.lock() {
+            memory.previous = Some(current);
+            memory.expanded = Some(target);
+        }
+        // 已经比目标大就原地不动，别把用户摆好的窗口又居中一次
+        if target != current {
+            win.set_size(LogicalSize::new(target.0 as f64, target.1 as f64))
+                .map_err(|e| e.to_string())?;
+            win.center().map_err(|e| e.to_string())?;
+        }
     } else {
-        win.set_size(PhysicalSize::new(
-            state.config.window.width as u32,
-            state.config.window.height as u32,
-        ))
-        .map_err(|e| e.to_string())?;
-        win.center().map_err(|e| e.to_string())?;
+        let restore = state.graph_window.lock().ok().and_then(|memory| {
+            // 当前尺寸仍等于放大目标 → 用户没动过，回到进入图谱前；
+            // 否则说明用户自己拖过窗口，保持现状，不硬改他的选择。
+            if memory.expanded == Some(current) {
+                memory.previous
+            } else {
+                None
+            }
+        });
+        if let Some((w, h)) = restore {
+            if (w, h) != current {
+                win.set_size(LogicalSize::new(w as f64, h as f64))
+                    .map_err(|e| e.to_string())?;
+                win.center().map_err(|e| e.to_string())?;
+            }
+        }
+        if let Ok(mut memory) = state.graph_window.lock() {
+            *memory = GraphWindowMemory::default();
+        }
     }
     Ok(())
 }
@@ -1722,6 +1773,43 @@ fn window_state_path(app: &AppHandle) -> std::path::PathBuf {
     dir.join("window_state.json")
 }
 
+/// 窗口位置与大小（大小是逻辑像素，跨 DPI 也能还原成观感一致的窗口）。
+/// `w`/`h` 允许缺省：0.7.1 及更早版本只写 `[x, y]`，旧文件按位置读取即可。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct WindowStateFile {
+    x: i32,
+    y: i32,
+    #[serde(default)]
+    w: Option<u32>,
+    #[serde(default)]
+    h: Option<u32>,
+}
+
+impl WindowStateFile {
+    fn size(&self) -> Option<(u32, u32)> {
+        self.w.zip(self.h).filter(|(w, h)| *w > 0 && *h > 0)
+    }
+}
+
+/// 解析窗口状态文件：新格式对象优先，兼容旧格式 `[x, y]`。
+fn parse_window_state(raw: &str) -> Option<WindowStateFile> {
+    if let Ok(state) = serde_json::from_str::<WindowStateFile>(raw) {
+        return Some(state);
+    }
+    let (x, y) = serde_json::from_str::<(i32, i32)>(raw).ok()?;
+    Some(WindowStateFile {
+        x,
+        y,
+        w: None,
+        h: None,
+    })
+}
+
+fn read_window_state(app: &AppHandle) -> Option<WindowStateFile> {
+    let raw = std::fs::read_to_string(window_state_path(app)).ok()?;
+    parse_window_state(&raw)
+}
+
 /// 换屏或分辨率变化后，在当前工作区内恢复主窗口，避免托盘唤起到屏幕外。
 fn ensure_window_on_screen(win: &tauri::WebviewWindow) -> tauri::Result<()> {
     let position = win.outer_position()?;
@@ -1737,13 +1825,48 @@ fn ensure_window_on_screen(win: &tauri::WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 换屏 / 缩放比例变化后，把窗口尺寸收进当前显示器工作区。
+/// 下限与 tauri.conf.json 的 minWidth / minHeight 保持一致，避免旧状态把窗口恢复得过小。
+const MIN_WINDOW_WIDTH: f64 = 360.0;
+const MIN_WINDOW_HEIGHT: f64 = 400.0;
+
+fn clamp_window_size(win: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = win.current_monitor() else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area().size.to_logical::<f64>(scale);
+    let Ok(size) = win.inner_size() else {
+        return;
+    };
+    let current = size.to_logical::<f64>(scale);
+    let max_w = (area.width - 24.0).max(MIN_WINDOW_WIDTH);
+    let max_h = (area.height - 24.0).max(MIN_WINDOW_HEIGHT);
+    let target_w = current.width.min(max_w).max(MIN_WINDOW_WIDTH);
+    let target_h = current.height.min(max_h).max(MIN_WINDOW_HEIGHT);
+    if (target_w - current.width).abs() > 0.5 || (target_h - current.height).abs() > 0.5 {
+        let _ = win.set_size(LogicalSize::new(target_w, target_h));
+    }
+}
+
 fn save_window_position(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         if win.is_minimized().unwrap_or(true) {
             return;
         }
         if let Ok(pos) = win.outer_position() {
-            if let Ok(data) = serde_json::to_string(&(pos.x, pos.y)) {
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let size = win
+                .inner_size()
+                .map(|size| size.to_logical::<f64>(scale))
+                .ok();
+            let state = WindowStateFile {
+                x: pos.x,
+                y: pos.y,
+                w: size.map(|s| s.width.round().max(1.0) as u32),
+                h: size.map(|s| s.height.round().max(1.0) as u32),
+            };
+            if let Ok(data) = serde_json::to_string(&state) {
                 let _ = std::fs::write(window_state_path(app), data);
             }
         }
@@ -1751,17 +1874,22 @@ fn save_window_position(app: &AppHandle) {
 }
 
 fn restore_window_position(app: &AppHandle) {
-    let path = window_state_path(app);
-    if let Ok(data) = std::fs::read_to_string(&path) {
-        if let Ok((x, y)) = serde_json::from_str::<(i32, i32)>(&data) {
-            if let Some(win) = app.get_webview_window("main") {
-                if win.set_position(PhysicalPosition::new(x, y)).is_ok() {
-                    if let Err(error) = ensure_window_on_screen(&win) {
-                        eprintln!("恢复窗口位置失败: {error}");
-                    } else {
-                        save_window_position(app);
-                    }
-                }
+    let Some(saved) = read_window_state(app) else {
+        return;
+    };
+    if let Some(win) = app.get_webview_window("main") {
+        if let Some((w, h)) = saved.size() {
+            let _ = win.set_size(LogicalSize::new(w as f64, h as f64));
+        }
+        if win
+            .set_position(PhysicalPosition::new(saved.x, saved.y))
+            .is_ok()
+        {
+            if let Err(error) = ensure_window_on_screen(&win) {
+                eprintln!("恢复窗口位置失败: {error}");
+            } else {
+                clamp_window_size(&win);
+                save_window_position(app);
             }
         }
     }
@@ -2366,6 +2494,7 @@ pub fn run() {
                 targets: target_store.clone(),
                 processor: processor_settings.clone(),
                 kb: kb.clone(),
+                graph_window: std::sync::Mutex::new(GraphWindowMemory::default()),
             });
             // 划词状态与图谱服务也先注册：下面要手动创建窗口，前端一加载就可能 invoke
             let selection_state = Arc::new(selection::SelectionState::new(
@@ -2462,14 +2591,14 @@ pub fn run() {
                     eprintln!("[memTools] 分类树预热线程启动失败：{e}");
                 }
             }
-            // 应用 config.toml 窗口尺寸（默认 480x560）
+            // 应用 config.toml 窗口尺寸（默认 480x560 逻辑像素）
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_size(PhysicalSize::new(
-                    default_config.window.width as u32,
-                    default_config.window.height as u32,
+                let _ = win.set_size(LogicalSize::new(
+                    default_config.window.width,
+                    default_config.window.height,
                 ));
             }
-            // 恢复上次窗口位置
+            // 恢复上次窗口位置与大小（window_state.json；旧文件只有位置）
             if default_config.window.remember_position {
                 restore_window_position(app.handle());
             }
@@ -2637,7 +2766,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::looks_like_memory_id;
-    use super::{ingest_args, wants_ai, TargetIn, TargetOut};
+    use super::{
+        ingest_args, parse_window_state, wants_ai, TargetIn, TargetOut, MIN_WINDOW_HEIGHT,
+        MIN_WINDOW_WIDTH,
+    };
 
     /// 窗口必须在 setup 里注册完状态后再创建，否则前端可能先 invoke，
     /// 报 "state not managed ... You must call .manage()"。
@@ -2744,6 +2876,42 @@ mod tests {
         assert!(v.label.is_empty());
         assert!(v.kind.is_empty());
         assert!(v.r#type.is_none());
+    }
+
+    /// 0.7.1 的 window_state.json 只有 `[x, y]`，必须还能读；
+    /// 新格式带尺寸，用于记住用户手动拖出的窗口大小。
+    #[test]
+    fn window_state_reads_legacy_and_new_format() {
+        let legacy = parse_window_state("[120,-40]").expect("旧格式应可解析");
+        assert_eq!((legacy.x, legacy.y), (120, -40));
+        assert_eq!(legacy.size(), None);
+
+        let current = parse_window_state(r#"{"x":10,"y":20,"w":760,"h":620}"#)
+            .expect("新格式应可解析");
+        assert_eq!((current.x, current.y), (10, 20));
+        assert_eq!(current.size(), Some((760, 620)));
+
+        // 缺尺寸或尺寸非法时只恢复位置，不用 0 去设窗口
+        let broken = parse_window_state(r#"{"x":1,"y":2}"#).expect("缺尺寸也应可解析");
+        assert_eq!(broken.size(), None);
+        let zero = parse_window_state(r#"{"x":1,"y":2,"w":0,"h":620}"#).unwrap();
+        assert_eq!(zero.size(), None);
+        assert!(parse_window_state("not json").is_none());
+    }
+
+    /// 主窗必须允许手动缩放，并给 CSS 断点留出最小空间。
+    #[test]
+    fn main_window_is_resizable_with_min_size() {
+        let raw = include_str!("../tauri.conf.json");
+        let v: serde_json::Value = serde_json::from_str(raw).expect("tauri.conf.json 应可解析");
+        let wins = v["app"]["windows"].as_array().expect("应有 windows 数组");
+        let main = wins
+            .iter()
+            .find(|w| w["label"] == serde_json::json!("main"))
+            .expect("应有 main 窗口");
+        assert_eq!(main["resizable"], serde_json::json!(true));
+        assert_eq!(main["minWidth"].as_f64(), Some(MIN_WINDOW_WIDTH));
+        assert_eq!(main["minHeight"].as_f64(), Some(MIN_WINDOW_HEIGHT));
     }
 }
 

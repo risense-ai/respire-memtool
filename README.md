@@ -7,6 +7,7 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 ## 功能
 
 - **全局热键**：默认 `Ctrl+Alt+R` 唤起或隐藏小窗，焦点自动落在输入框；窗口置顶、无边框、透明，关闭按钮和 `Esc` 仅隐藏到托盘。
+- **窗口可缩放**：拖四边或四角即可改大小（最小 360×400），下次启动沿用上次的尺寸与位置；界面随宽度自适应——窄窗把图谱的次要按钮收进「显示」菜单、图例只留必要说明，宽窗自动变成「写内容 / 选挂点」双栏。
 - **系统托盘**：左键显示/隐藏面板；右键菜单可显示面板、开关划词悬浮、退出应用。
 - **手动记录**：选择主区或日记，从运行时拉取的 23 个分类树根中选择挂点，再选择 type（context / decision / preference / task / emotion / time / skill）。
 - **判重流程**：命中疑似重复时提供“改 / 并 / 挂 / 存新条”四种处理，破坏性操作前自动备份。
@@ -98,12 +99,12 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 | 键 | 默认值 | 说明 |
 | --- | --- | --- |
 | `hotkey.register` | `Ctrl+Alt+R` | 全局热键，语法由 tauri-plugin-global-shortcut 解析 |
-| `window.width` | `480` | 窗口宽度（逻辑像素） |
-| `window.height` | `560` | 窗口高度（逻辑像素） |
+| `window.width` | `480` | 初始窗口宽度（逻辑像素）；手动缩放后以实际尺寸为准 |
+| `window.height` | `560` | 初始窗口高度（逻辑像素）；最小 360×400 |
 | `window.always_on_top` | `true` | 窗口置顶 |
 | `window.decorations` | `false` | 无系统边框，由前端自绘 |
 | `window.transparent` | `true` | 透明窗口 |
-| `window.remember_position` | `true` | 记忆上次窗口位置 |
+| `window.remember_position` | `true` | 记忆上次窗口位置与大小 |
 | `window.submit_close` | `true` | 提交成功后短暂回显并自动隐藏 |
 
 ### rsrs 连接

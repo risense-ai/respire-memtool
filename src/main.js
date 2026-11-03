@@ -367,7 +367,8 @@ async function enterGraph() {
   }
   graphVisible = true;
   graphView.setActive(true);
-  if (!graphExpanded) await setGraphExpanded(true);
+  // 小窗进入图谱时顺手放大；用户已经把窗口拖大时不打断他的尺寸选择
+  if (!graphExpanded && window.innerWidth < 700) await setGraphExpanded(true);
   if (!graphLoaded) {
     await loadGraphSnapshot();
   } else {
@@ -1928,6 +1929,41 @@ function initDrag() {
   });
 }
 
+// ---- 窗口缩放手柄（无边框窗口）----
+// 系统标题栏被去掉后没有原生边框，四边/四角各放一个热区，
+// mousedown 时交给 Tauri 的 startResizeDragging，由系统接管拖拽缩放。
+// 热区只压在外壳内边距（10–16px）上，不遮挡内容。
+function initWindowResize() {
+  const grips = document.getElementById("win-grips");
+  if (!grips) return;
+  const win = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!win || typeof win.startResizeDragging !== "function") {
+    grips.remove();
+    return;
+  }
+  const onDown = (e) => {
+    if (e.button !== 0) return;
+    const direction = e.currentTarget?.dataset?.resize;
+    if (!direction) return;
+    e.preventDefault();
+    e.stopPropagation();
+    win.startResizeDragging(direction).catch((err) =>
+      console.warn("[memTools] startResizeDragging 失败:", err)
+    );
+  };
+  grips.querySelectorAll(".win-grip").forEach((grip) => {
+    grip.addEventListener("mousedown", onDown);
+    // 触屏：按下即开始缩放，避免被当成点击吞掉
+    grip.addEventListener("touchstart", (e) => {
+      if (!e.touches.length) return;
+      const direction = grip.dataset.resize;
+      if (!direction) return;
+      e.preventDefault();
+      win.startResizeDragging(direction).catch(() => {});
+    }, { passive: false });
+  });
+}
+
 // ---- 浏览器扩展接入面板 ----
 function initExtensionPanel() {
   if (!extBtn || !extPanel) return;
@@ -2535,6 +2571,7 @@ async function init() {
   // 兜底守卫：Tauri 2 默认不注入 window.__TAURI__（需 withGlobalTauri: true）。
   // 缺失时明确提示而非静默，UI 骨架仍完整渲染，不阻塞界面。
   if (!window.__TAURI__?.core || !window.__TAURI__?.event) {
+    document.getElementById("win-grips")?.remove();
     setResult(
       "err",
       "请在 memTools 窗口中使用",
@@ -2547,6 +2584,8 @@ async function init() {
 
   // 标题栏拖拽（无边框窗口）
   initDrag();
+  // 窗口四边 / 四角缩放（无边框窗口自己实现，不依赖系统标题栏）
+  initWindowResize();
   // 浏览器扩展接入面板（复制端口/令牌）
   initExtensionPanel();
   // 设置面板：开机自启开关 + 开机自启的 runtime 检查结果
@@ -2688,24 +2727,67 @@ async function init() {
   graphRotate.addEventListener("click", () => {
     graphAutoRotate = !graphAutoRotate;
     graphRotate.classList.toggle("active", graphAutoRotate);
+    graphMenu
+      .querySelector('[data-graph-action="rotate"]')
+      ?.classList.toggle("active", graphAutoRotate);
     graphView?.setAutoRotate(graphAutoRotate);
   });
   graphReload.addEventListener("click", () => loadGraphSnapshot());
   graphRebuild.addEventListener("click", () => rebuildGraphLayout());
   graphExpand.addEventListener("click", () => setGraphExpanded(!graphExpanded));
 
-  const closeGraphMenu = () => {
+  function closeGraphMenu() {
     graphMenu.classList.add("hidden");
     graphDisplay.classList.remove("active");
-  };
+  }
+  // 菜单默认贴在「显示」按钮下方右对齐；窄窗里按钮靠左，右对齐会把菜单顶出窗口左侧，
+  // 所以打开时按窗口边界夹一次位置（fixed 定位，窗口再窄也不出界）。
+  function openGraphMenu() {
+    graphMenu.style.position = "fixed";
+    graphMenu.style.left = "0px";
+    graphMenu.style.right = "auto";
+    graphMenu.style.top = "0px";
+    graphMenu.classList.remove("hidden");
+    const menu = graphMenu.getBoundingClientRect();
+    const button = graphDisplay.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.max(
+      margin,
+      Math.min(button.right - menu.width, window.innerWidth - menu.width - margin)
+    );
+    // 底栏是更高层的兄弟节点，菜单不能钻到它下面
+    const footerTop = document.querySelector(".statusbar")?.getBoundingClientRect().top;
+    const bottomLimit = Math.min(window.innerHeight, footerTop ?? window.innerHeight) - margin;
+    const below = button.bottom + 6;
+    const top =
+      below + menu.height > bottomLimit
+        ? Math.max(margin, Math.min(button.top - menu.height - 6, bottomLimit - menu.height))
+        : below;
+    graphMenu.style.left = `${Math.round(left)}px`;
+    graphMenu.style.top = `${Math.round(top)}px`;
+    graphDisplay.classList.add("active");
+  }
   graphDisplay.addEventListener("click", (e) => {
     e.stopPropagation();
-    const hiddenNow = graphMenu.classList.toggle("hidden");
-    graphDisplay.classList.toggle("active", !hiddenNow);
+    if (graphMenu.classList.contains("hidden")) openGraphMenu();
+    else closeGraphMenu();
   });
-  graphMenu.addEventListener("click", (e) => e.stopPropagation());
+  graphMenu.addEventListener("click", (e) => {
+    e.stopPropagation();
+    // 窄窗把「自转 / 重排 / 重载」收进了菜单，点菜单项等于点原按钮，功能与状态不分叉
+    const action = e.target.closest("[data-graph-action]")?.dataset.graphAction;
+    if (!action) return;
+    const target = { rotate: graphRotate, rebuild: graphRebuild, reload: graphReload }[action];
+    closeGraphMenu();
+    target?.click();
+  });
   document.addEventListener("click", () => {
     if (!graphMenu.classList.contains("hidden")) closeGraphMenu();
+  });
+  // 窗口尺寸变了就先收起浮层，避免旧坐标悬在内容上
+  window.addEventListener("resize", () => {
+    if (!graphMenu.classList.contains("hidden")) closeGraphMenu();
+    graphSearchResults.classList.add("hidden");
   });
   graphContainerSwitch.addEventListener("change", () => {
     graphView?.setContainerVisible(graphContainerSwitch.checked);
