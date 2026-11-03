@@ -66,7 +66,7 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 
 首次启动时，如果可执行文件旁和用户配置目录都没有 `config.toml`，应用会把内置模板写入用户配置目录。之后可编辑该文件调整热键、端口、自动化等行为。
 
-发布包未做商业代码签名与公证：Windows 可能提示“未知发布者”；macOS 若被 Gatekeeper 拦住，可在 Finder 里右键应用选「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/memTools.app`，也可到「系统设置 → 隐私与安全性 → 仍要打开」。现有 0.8.0 的 macOS 包是 Apple Silicon（arm64）；构建脚本已改为 universal（Intel + Apple Silicon），从下一个版本起提供。
+发布包未做商业代码签名与公证：Windows 可能提示“未知发布者”；macOS 若被 Gatekeeper 拦住，可在 Finder 里右键应用选「打开」，或执行 `xattr -dr com.apple.quarantine /Applications/memTools.app`，也可到「系统设置 → 隐私与安全性 → 仍要打开」。从 0.8.1 起 macOS 包为 universal（Apple Silicon + Intel）；0.8.0 及更早只提供 Apple Silicon（arm64）。
 
 ## 快速上手
 
