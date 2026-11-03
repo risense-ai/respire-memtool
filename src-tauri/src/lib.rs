@@ -2367,6 +2367,23 @@ pub fn run() {
                 processor: processor_settings.clone(),
                 kb: kb.clone(),
             });
+            // 划词状态与图谱服务也先注册：下面要手动创建窗口，前端一加载就可能 invoke
+            let selection_state = Arc::new(selection::SelectionState::new(
+                default_config.selection.enabled,
+            ));
+            app.manage(selection_state.clone());
+            let graph_cache = config_dir.join("graph");
+            app.manage(Arc::new(graph::GraphService::new(graph_cache)));
+            // tauri.conf.json 里的窗口原本由 Tauri 在 setup 之前创建，此时 AppState 还没
+            // manage，前端一旦先 invoke 就会报 "state not managed ... You must call .manage()"。
+            // 所以这些窗口改为 create=false，等状态注册完再逐个创建（窗口本身 visible=false，不会闪）。
+            let window_configs: Vec<_> = app.config().app.windows.iter().cloned().collect();
+            for cfg in window_configs {
+                if cfg.create {
+                    continue;
+                }
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+            }
             // 右键菜单：设置里开着就（重新）写一次，保证 exe 路径是最新的
             {
                 let kb_cfg = kb.effective();
@@ -2466,23 +2483,12 @@ pub fn run() {
                 eprintln!("[memTools] 建立系统托盘失败: {e}");
             }
             // 全局划词悬浮（P8）：钩子常驻安装，enabled=false 时内部直接忽略（托盘可随时开）
-            let selection_state = Arc::new(selection::SelectionState::new(
-                default_config.selection.enabled,
-            ));
-            app.manage(selection_state.clone());
             selection::start(
                 app.handle().clone(),
                 default_config.selection.clone(),
                 selection_state,
             );
             updater::cleanup(app.handle());
-            // 3D 图谱服务（P6-③）：缓存放在应用配置目录，不写 rsrs 数据目录
-            let graph_cache = app
-                .path()
-                .app_config_dir()
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join("graph");
-            app.manage(Arc::new(graph::GraphService::new(graph_cache)));
             // 提醒扫描线程（P5）：启动后 8s 首扫，之后每 interval_minutes 一次
             if default_config.reminder.enabled {
                 let client = app.state::<AppState>().client.clone();
@@ -2632,6 +2638,24 @@ pub fn run() {
 mod tests {
     use super::looks_like_memory_id;
     use super::{ingest_args, wants_ai, TargetIn, TargetOut};
+
+    /// 窗口必须在 setup 里注册完状态后再创建，否则前端可能先 invoke，
+    /// 报 "state not managed ... You must call .manage()"。
+    #[test]
+    fn config_windows_are_created_after_state() {
+        let raw = include_str!("../tauri.conf.json");
+        let v: serde_json::Value = serde_json::from_str(raw).expect("tauri.conf.json 应可解析");
+        let wins = v["app"]["windows"].as_array().expect("应有 windows 数组");
+        assert!(!wins.is_empty());
+        for w in wins {
+            assert_eq!(
+                w["create"],
+                serde_json::json!(false),
+                "窗口 {} 必须 create=false（在 setup 里注册状态后手动创建）",
+                w["label"]
+            );
+        }
+    }
 
     fn argv(items: &[&str]) -> Vec<String> {
         std::iter::once("memtools.exe".to_string())

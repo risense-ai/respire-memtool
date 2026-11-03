@@ -24,7 +24,8 @@
         "transparent": true,
         "visible": false,
         "skipTaskbar": true,
-        "shadow": true
+        "shadow": true,
+        "create": false
       },
       {
         "label": "selector",
@@ -40,7 +41,8 @@
         "visible": false,
         "skipTaskbar": true,
         "focus": false,
-        "shadow": false
+        "shadow": false,
+        "create": false
       },
       {
         "label": "ai",
@@ -57,7 +59,8 @@
         "transparent": false,
         "visible": false,
         "skipTaskbar": false,
-        "center": true
+        "center": true,
+        "create": false
       }
     ],
     "security": {
