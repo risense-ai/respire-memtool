@@ -25,12 +25,15 @@ jobs:
           - os: windows-latest
             bundles: msi,nsis
             artifact: windows
+            extra: ""
           - os: macos-latest
             bundles: app,dmg
             artifact: macos
+            extra: "--target universal-apple-darwin"
           - os: ubuntu-22.04
             bundles: deb,appimage
             artifact: linux
+            extra: ""
     env:
       CARGO_TERM_COLOR: always
 
@@ -43,6 +46,10 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -66,7 +73,7 @@ jobs:
 
       - run: npm test
 
-      - run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+      - run: npm run tauri build -- --bundles ${{ matrix.bundles }} ${{ matrix.extra }}
 
       - name: Stage assets
         shell: bash
@@ -79,7 +86,9 @@ jobs:
             cp src-tauri/target/release/memtools.exe "release-assets/memtools-$VERSION.exe"
           fi
 
-          find src-tauri/target/release/bundle -type f \
+          # macOS universal builds land in target/universal-apple-darwin/release/bundle,
+          # other platforms in target/release/bundle; search both.
+          find src-tauri/target -type f \
             \( -iname '*.msi' -o -iname '*setup.exe' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' \) \
             -exec cp {} release-assets/ \;
 
