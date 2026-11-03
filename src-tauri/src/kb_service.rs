@@ -1076,17 +1076,18 @@ mod tests {
 
     #[test]
     fn initial_title_falls_back_to_file_name() {
-        let r = req("file", r"D:\docs\Rust 所有权.md", "");
+        // 用正斜杠：Windows 与 macOS/Linux 都按路径解析（反斜杠在非 Windows 上只是文件名字符）
+        let r = req("file", "D:/docs/Rust 所有权.md", "");
         assert_eq!(initial_title(&r, Kind::File), "Rust 所有权");
-        let r = req("file", r"D:\docs\无扩展名", "");
+        let r = req("file", "D:/docs/无扩展名", "");
         assert_eq!(initial_title(&r, Kind::File), "无扩展名");
-        let r = req("folder", r"D:\docs\项目资料", "");
+        let r = req("folder", "D:/docs/项目资料", "");
         assert_eq!(initial_title(&r, Kind::Folder), "项目资料");
         let r = req("text", "第一行标题\n正文", "");
         assert_eq!(initial_title(&r, Kind::Text), "第一行标题");
         let r = req("url", "https://example.com/a/b", "");
         assert_eq!(initial_title(&r, Kind::Url), "example.com");
-        let r = req("file", r"D:\a.md", "自定义");
+        let r = req("file", "D:/a.md", "自定义");
         assert_eq!(initial_title(&r, Kind::File), "自定义");
     }
 
