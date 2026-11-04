@@ -4,7 +4,30 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>memTools</title>
+  <!-- 令牌层 → 组件层 → 布局层（顺序不可颠倒：布局层要能覆盖组件骨架） -->
+  <link rel="stylesheet" href="/src/theme/tokens.css" />
   <link rel="stylesheet" href="/src/styles.css" />
+  <link rel="stylesheet" href="/src/theme/layout.css" />
+  <link rel="stylesheet" href="/src/theme/ui.css" />
+  <script>
+    // 首绘前套用已存主题的底色与主文字色，避免亮暗闪烁。
+    // 完整令牌由 src/theme/engine.js 在模块加载后一次性写入。
+    try {
+      var saved = localStorage.getItem("memtool.theme.v1");
+      if (saved) {
+        var t = JSON.parse(saved);
+        var r = document.documentElement;
+        if (t && t.id) r.dataset.theme = t.id;
+        if (t && t.layout && t.layout.main && t.layout.main.mode) {
+          r.dataset.layoutMode = t.layout.main.mode[0];
+        }
+        var c = t && t.tokens && t.tokens.color;
+        if (c && c.bg && c.bg.base) r.style.setProperty("--c-bg", c.bg.base);
+        if (c && c.text && c.text.primary) r.style.setProperty("--c-text", c.text.primary);
+        if (c && c.bg && c.bg.sunken) r.style.setProperty("--c-bg-sunken", c.bg.sunken);
+      }
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <div id="app" class="shell">
@@ -16,7 +39,7 @@
         <span class="brand-sub">rsrs 记忆</span>
       </div>
       <div class="titlebar-actions">
-        <button id="btn-ai" class="tb-btn" title="AI 与知识库（单独窗口）">AI</button>
+        <button id="btn-ai" class="tb-btn" title="AI 与知识库窗口">AI</button>
         <button id="btn-min" class="tb-btn" title="隐藏到托盘">—</button>
         <button id="btn-close" class="tb-btn tb-close" title="隐藏到托盘 (Esc)">✕</button>
       </div>
@@ -44,14 +67,14 @@
         </div>
 
         <div class="input-wrap">
-          <textarea id="memory-input" rows="3" placeholder="记录此刻的想法 / 事件 / 决策…&#10;（主区条目建议包含：【前因】【行为】【后果】）" spellcheck="false"></textarea>
+          <textarea id="memory-input" rows="3" placeholder="记录想法、事件或决策&#10;主区条目建议包含【前因】【行为】【后果】" spellcheck="false"></textarea>
         </div>
 
         <!-- 三段模板（仅「三段模板」模式显示） -->
         <div class="sections-wrap hidden" id="sections-wrap">
           <label class="sec-field">
             <span class="sec-tag">前因</span>
-            <textarea id="sec-cause" rows="2" placeholder="背景 / 起因（可留空）" spellcheck="false"></textarea>
+            <textarea id="sec-cause" rows="2" placeholder="起因（可留空）" spellcheck="false"></textarea>
           </label>
           <label class="sec-field">
             <span class="sec-tag">行为</span>
@@ -59,13 +82,13 @@
           </label>
           <label class="sec-field">
             <span class="sec-tag">后果</span>
-            <textarea id="sec-effect" rows="2" placeholder="结果 / 结论（可留空）" spellcheck="false"></textarea>
+            <textarea id="sec-effect" rows="2" placeholder="结果或结论（可留空）" spellcheck="false"></textarea>
           </label>
         </div>
 
         <div class="input-meta">
           <span id="char-count">0 字</span>
-          <button id="process-btn" class="mini-btn process-btn" title="梳理内容（总结/结构化/起标题/翻译/提取/润色）">梳理</button>
+          <button id="process-btn" class="mini-btn process-btn" title="梳理内容：总结、结构化、起标题、翻译、提取、润色">梳理</button>
           <span class="hint">Ctrl+Enter 提交 · Esc 关闭</span>
         </div>
 
@@ -90,12 +113,12 @@
         <!-- task 类型：【触发】行（日期不猜，缺失时询问） -->
         <div class="trigger-row hidden" id="trigger-row">
           <span class="trigger-label">【触发】</span>
-          <input id="trigger-input" type="text" placeholder="2026-10-20 10:00 或 可核实前提（勿猜）" spellcheck="false" />
+          <input id="trigger-input" type="text" placeholder="2026-10-20 10:00 或可核实前提（勿猜）" spellcheck="false" />
         </div>
 
         <!-- 自动化提示词（仅自动化开启时显示） -->
         <div class="hint-wrap hidden" id="hint-wrap">
-          <input id="hint-input" type="text" placeholder="项目名 / 关键词（可选，提升判重准确度）" spellcheck="false" />
+          <input id="hint-input" type="text" placeholder="项目名或关键词（可选，用于判重）" spellcheck="false" />
         </div>
       </div>
 
@@ -111,12 +134,15 @@
           </div>
         </section>
 
-        <!-- 层二：分类树（仅主区） -->
+        <!-- 层二：分类纲（仅主区）——23 纲平铺常驻，不分组 -->
         <section class="menu-level hidden" id="level-2">
-          <div class="level-label">挂哪棵树</div>
-          <input id="parent-query" class="memory-query" type="search" placeholder="搜索具体上级节点的标题或 ID" aria-label="选择上级节点" />
-          <div id="parent-results" class="tree-chips"></div>
+          <input id="category-filter" class="memory-query" type="search" placeholder="搜索分类" aria-label="搜索分类" autocomplete="off" />
           <div id="tree-groups" class="tree-groups"></div>
+          <div class="parent-block">
+            <div class="level-label">上级节点 <em class="optional">可选</em></div>
+            <input id="parent-query" class="memory-query" type="search" placeholder="搜索上级节点标题或 ID" aria-label="选择上级节点" autocomplete="off" />
+            <div id="parent-results" class="tree-chips"></div>
+          </div>
         </section>
 
         <!-- 层三：type（仅主区，可选） -->
@@ -159,9 +185,9 @@
       <div class="browse-toolbar search-options">
         <div class="view-switch" id="search-kind" role="group" aria-label="搜索方式"><button class="mini-btn active" data-kind="quick" aria-pressed="true">关键词</button><button class="mini-btn" data-kind="semantic" aria-pressed="false">语义</button></div>
         <div class="view-switch" id="search-view-mode" role="group" aria-label="搜索结果展示方式"><button class="mini-btn active" data-mode="tree" aria-pressed="true">树形</button><button class="mini-btn" data-mode="list" aria-pressed="false">列表</button></div>
-        <label class="browse-count hidden" id="search-count-wrap" title="语义搜索返回数量"><span>数量</span><input id="search-count" type="number" min="1" max="100" value="20" /></label>
+        <label class="browse-count hidden" id="search-count-wrap" title="语义搜索返回条数"><span>数量</span><input id="search-count" type="number" min="1" max="100" value="20" /></label>
       </div>
-      <div id="search-status" class="browse-status memory-status" role="status">输入关键词，即时搜索全部有效记忆。</div>
+      <div id="search-status" class="browse-status memory-status" role="status">输入关键词，搜索全部有效记忆。</div>
       <div class="browse-list" id="search-list"></div>
     </main>
 
@@ -177,7 +203,7 @@
     <!-- 快捷目标：划词面板与网页插件共用的有序保存位置列表 -->
     <main class="content hidden" id="view-targets">
       <div class="targets-intro">
-        <span class="targets-hint">第 1 个 = 最优先。划词悬浮窗与网页插件共用这份列表。</span>
+        <span class="targets-hint">第 1 个优先。划词窗与网页插件共用此列表。</span>
         <span id="targets-status" class="browse-status"></span>
       </div>
       <div id="targets-list" class="targets-list"></div>
@@ -194,7 +220,7 @@
       <div class="graph-toolbar">
         <span id="graph-status" class="graph-status">尚未加载</span>
         <div class="graph-actions">
-          <label class="graph-switch" title="显示 / 隐藏大脑容器">
+          <label class="graph-switch" title="显示或隐藏容器">
             <span class="switch">
               <input type="checkbox" id="graph-container-switch" checked />
               <span class="knob"></span>
@@ -218,7 +244,7 @@
                   max="6"
                   step="1"
                   value="3"
-                  title="向邻居最多下探几层（1-6）"
+                  title="向邻居最多展开层数（1–6）"
                 />
               </div>
               <div class="graph-menu-row">
@@ -231,7 +257,7 @@
                   max="500"
                   step="1"
                   value="20"
-                  title="单次聚焦最多点亮多少节点；整层放不下时少显示一层"
+                  title="单次聚焦最多点亮节点数；整层放不下则少显示一层"
                 />
               </div>
               <!-- 窄窗时三个次要动作收进这里，避免工具栏挤成两行；宽窗由 CSS 隐藏 -->
@@ -247,7 +273,7 @@
           <button id="graph-rotate" class="mini-btn graph-opt-wide" title="自动旋转">自转</button>
           <button id="graph-rebuild" class="mini-btn graph-opt-wide" title="重新计算 PCA 布局">重排</button>
           <button id="graph-reload" class="mini-btn graph-opt-wide" title="重新拉取全量快照">重载</button>
-          <button id="graph-expand" class="mini-btn" title="放大 / 还原窗口">放大</button>
+          <button id="graph-expand" class="mini-btn" title="放大或还原窗口">放大</button>
         </div>
       </div>
       <div class="graph-search-bar">
@@ -277,7 +303,7 @@
 
     <!-- 底栏：自动化开关 + 扩展入口 -->
     <footer class="statusbar">
-      <label class="switch-row" title="本地判档 / 判重 / 判树（无需 API Key；语义检索由 rsrs 本地模型提供）">
+      <label class="switch-row" title="本地判档、判重、判树，无需 API Key；语义检索由 rsrs 本地模型提供">
         <span class="switch-label">自动化</span>
         <span class="switch">
           <input type="checkbox" id="auto-switch" />
@@ -285,13 +311,88 @@
         </span>
         <span class="switch-state" id="auto-state">手动</span>
       </label>
-      <button id="settings-btn" class="mini-btn settings-btn" title="设置：开机自启 / rsrs 启动检查">设置</button>
-      <button id="rsrs-btn" class="mini-btn rsrs-btn" title="rsrs 命令行：检测 / 安装 / 更新">rsrs</button>
+      <button id="settings-btn" class="mini-btn settings-btn" title="设置：开机自启、rsrs 检查">设置</button>
+      <button id="theme-btn" class="mini-btn theme-btn" title="外观：主题与布局">外观</button>
+      <button id="rsrs-btn" class="mini-btn rsrs-btn" title="rsrs 命令行：检测、安装、更新">rsrs</button>
       <button id="update-btn" class="mini-btn update-btn" title="检查更新">更新</button>
-      <button id="ext-btn" class="mini-btn ext-btn" title="浏览器扩展接入信息">扩展</button>
+      <button id="ext-btn" class="mini-btn ext-btn" title="浏览器扩展接入">扩展</button>
       <span id="sync-badge" class="sync-badge hidden" title="rsrs 同步状态"></span>
       <span id="runtime-dot" class="runtime-dot" title="rsrs runtime 状态"></span>
     </footer>
+
+    <!-- 外观：主题引擎（令牌 + 布局，可导入导出） -->
+    <div id="theme-panel" class="theme-panel hidden">
+      <div class="theme-head">
+        <span class="theme-title">外观</span>
+        <span id="theme-current-name" class="theme-current"></span>
+        <button id="theme-close" class="mini-btn theme-close" title="关闭">×</button>
+      </div>
+      <div class="theme-body">
+        <div class="theme-label">预设主题</div>
+        <div id="theme-presets" class="theme-presets"></div>
+
+        <div class="theme-label">颜色</div>
+        <div class="theme-grid">
+          <label class="theme-field"><span>底色</span><input id="theme-color-bg" type="color" /></label>
+          <label class="theme-field"><span>面板</span><input id="theme-color-surface" type="color" /></label>
+          <label class="theme-field"><span>凹陷</span><input id="theme-color-sunken" type="color" /></label>
+          <label class="theme-field"><span>主文</span><input id="theme-color-text" type="color" /></label>
+          <label class="theme-field"><span>次文</span><input id="theme-color-dim" type="color" /></label>
+          <label class="theme-field"><span>强调</span><input id="theme-color-accent" type="color" /></label>
+          <label class="theme-field"><span>描线</span><input id="theme-color-line" type="color" /></label>
+        </div>
+
+        <div class="theme-label">字体</div>
+        <div class="theme-grid">
+          <label class="theme-field theme-field-wide"><span>界面</span>
+            <select id="theme-font-ui">
+              <option value='-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif'>系统无衬线</option>
+              <option value='"Noto Serif SC", "Songti SC", Georgia, "Times New Roman", serif'>衬线（书卷）</option>
+              <option value='"JetBrains Mono", "Cascadia Code", Consolas, monospace'>等宽</option>
+            </select>
+          </label>
+          <label class="theme-field theme-field-wide"><span>品牌</span>
+            <select id="theme-font-brand">
+              <option value='-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif'>系统无衬线</option>
+              <option value='"Noto Serif SC", "Songti SC", Georgia, "Times New Roman", serif'>衬线（书卷）</option>
+              <option value='"JetBrains Mono", "Cascadia Code", Consolas, monospace'>等宽</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="theme-label">形状与密度</div>
+        <div class="theme-grid">
+          <label class="theme-field"><span>圆角 <b id="theme-radius-val"></b></span><input id="theme-radius" type="range" min="0" max="16" step="1" /></label>
+          <label class="theme-field"><span>描线 <b id="theme-border-val"></b></span><input id="theme-border" type="range" min="1" max="2" step="1" /></label>
+          <label class="theme-field"><span>间距 <b id="theme-space-val"></b></span><input id="theme-space" type="range" min="4" max="20" step="4" /></label>
+          <label class="theme-field"><span>控件高 <b id="theme-ctl-h-val"></b></span><input id="theme-ctl-h" type="range" min="24" max="36" step="2" /></label>
+        </div>
+
+        <div class="theme-label">布局</div>
+        <div class="theme-grid">
+          <label class="theme-field"><span>分栏</span>
+            <select id="theme-layout-mode">
+              <option value="split">左右分栏</option>
+              <option value="stack">纵向堆叠</option>
+            </select>
+          </label>
+          <label class="theme-field"><span>右栏宽 <b id="theme-col-b-val"></b></span><input id="theme-col-b" type="range" min="140" max="260" step="4" /></label>
+          <label class="theme-check"><input id="theme-show-header" type="checkbox" /><span>显示顶栏</span></label>
+          <label class="theme-check"><input id="theme-show-tabs" type="checkbox" /><span>显示页签</span></label>
+          <label class="theme-check"><input id="theme-show-status" type="checkbox" /><span>显示底栏</span></label>
+          <label class="theme-check"><input id="theme-target-first" type="checkbox" /><span>目标面板在前</span></label>
+        </div>
+
+        <div class="theme-label">导入导出</div>
+        <textarea id="theme-io" class="theme-io" spellcheck="false" placeholder="主题 JSON：粘贴后点导入；点导出可把当前主题写入此处并复制"></textarea>
+        <div class="theme-actions">
+          <button id="theme-import" class="mini-btn">导入</button>
+          <button id="theme-export" class="mini-btn">导出</button>
+          <button id="theme-reset" class="mini-btn">重置为预设</button>
+        </div>
+        <div id="theme-io-status" class="theme-io-status"></div>
+      </div>
+    </div>
 
     <!-- 浏览器扩展接入面板 -->
     <div id="ext-panel" class="ext-panel hidden">
@@ -305,12 +406,12 @@
         <input id="ext-token" type="password" readonly spellcheck="false" />
       </div>
       <div class="ext-actions">
-        <button id="ext-install" class="mini-btn primary">安装 / 配对 Chrome 扩展</button>
-        <button id="ext-copy" class="mini-btn">复制令牌（备用）</button>
+        <button id="ext-install" class="mini-btn primary">安装并配对 Chrome 扩展</button>
+        <button id="ext-copy" class="mini-btn">复制令牌</button>
         <button id="ext-close" class="mini-btn">关闭</button>
       </div>
       <div class="ext-hint" id="ext-install-hint">
-        点击安装 / 配对，在 Chrome 开启开发者模式并加载已准备的目录。配对自动完成，无需复制令牌。
+        点安装并配对，在 Chrome 打开开发者模式，加载生成的目录。配对自动完成，无需复制令牌。
       </div>
     </div>
 
@@ -325,7 +426,7 @@
       <div class="rsrs-log hidden" id="rsrs-log"></div>
       <div class="update-actions">
         <button id="rsrs-check" class="mini-btn hidden">检查更新</button>
-        <button id="rsrs-restart" class="mini-btn hidden" title="重启 rsrs runtime，让新版本生效">重启 rsrs</button>
+        <button id="rsrs-restart" class="mini-btn hidden" title="重启 rsrs runtime，切换到新版本">重启 rsrs</button>
         <button id="rsrs-restart-cancel" class="mini-btn hidden">取消</button>
         <button id="rsrs-install" class="mini-btn primary hidden">安装 rsrs</button>
       </div>
@@ -340,7 +441,7 @@
       <div class="settings-row">
         <div class="settings-row-text">
           <span class="settings-label">开机自启</span>
-          <span class="settings-hint">登录系统后自动启动 memTools；若 rsrs 未运行，也会自动启动 rsrs。</span>
+          <span class="settings-hint">登录后启动 memTools；rsrs 未运行时一并启动。</span>
         </div>
         <label class="switch" title="开机自启">
           <input type="checkbox" id="autostart-switch" />
@@ -352,7 +453,7 @@
       <div class="settings-row">
         <div class="settings-row-text">
           <span class="settings-label">rsrs runtime</span>
-          <span class="settings-hint">开机自启时自动检查；离线时调用 rsrs 自行拉起服务。</span>
+          <span class="settings-hint">开机自启时检查；离线时由 rsrs 自行拉起服务。</span>
         </div>
         <button id="runtime-start" class="mini-btn">立即检查</button>
       </div>

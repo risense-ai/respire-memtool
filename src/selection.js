@@ -15,6 +15,18 @@ const state = {
   epoch: 0,
 };
 
+// 与其他窗口共用同一份主题（localStorage 同源），保证 AI 窗/划词窗与主窗配色一致。
+import { loadTheme, applyTheme } from "./theme/engine.js";
+
+(function bootstrapTheme() {
+  try {
+    const { theme } = loadTheme();
+    applyTheme(theme);
+  } catch (_) {
+    // 主题应用失败不应阻断窗口功能，tokens.css 的浅色默认值仍在
+  }
+})();
+
 const $ = (id) => document.getElementById(id);
 
 function tauriApi() {
@@ -25,7 +37,7 @@ function tauriApi() {
 
 async function call(cmd, args) {
   const api = tauriApi();
-  if (!api) throw new Error("请在 memTools 中打开");
+  if (!api) throw new Error("未在 memTools 窗口中运行");
   return api.core.invoke(cmd, args);
 }
 
@@ -274,21 +286,21 @@ async function onJournal() {
       const message =
         result && typeof result.message === "string" && result.message.trim()
           ? result.message.trim()
-          : "保存失败，请重试";
+          : "保存失败，重试一次";
       throw new Error(message);
     }
 
     const journal = $("btn-journal");
     if (journal) {
-      journal.textContent = "已存为日记 ✓";
+      journal.textContent = "已存为日记";
       journal.disabled = true;
     }
-    setStatus("已存为日记 ✓", "ok");
+    setStatus("已存为日记", "ok");
 
     state.savedId = typeof result.id === "string" && /^[a-f0-9-]{8,}$/i.test(result.id) ? result.id : null;
     const edit = $("btn-edit");
     if (edit) { edit.disabled = !state.savedId; edit.textContent = "查看记录"; }
-    setStatus(state.savedId ? "已存 · " + state.savedId.slice(0, 8) + " · 当日日记" : "已返回成功，但未提供记录 ID；请在最近记忆中查询", "ok");
+    setStatus(state.savedId ? "已存 · " + state.savedId.slice(0, 8) + " · 当日日记" : "已返回成功但未提供记录 ID，请在最近记忆中查询", "ok");
   } catch (err) {
     if (epoch !== state.epoch) return;
     state.busy = false;
@@ -317,7 +329,7 @@ async function onResearch() {
         source: state.source || "",
       },
     });
-    setStatus("已加入知识库队列，请在 AI 窗口查看进度", "ok");
+    setStatus("已加入知识库队列，在 AI 窗口查看进度", "ok");
     window.setTimeout(() => void onClose(), 900);
   } catch (err) {
     state.busy = false;
@@ -392,7 +404,7 @@ function enterBrowserMode() {
   if (research) research.disabled = true;
   if (closeBtn) closeBtn.disabled = true;
 
-  setStatus("请在 memTools 中打开", "warn");
+  setStatus("未在 memTools 窗口中运行", "warn");
 }
 
 async function init() {
@@ -436,7 +448,7 @@ function boot() {
   void init().catch(() => {
     try {
       enterExpanded();
-      setStatus("初始化失败，请在 memTools 中打开", "err");
+      setStatus("初始化失败，未在 memTools 窗口中运行", "err");
     } catch (_) {
       /* 保持静默，避免控制台未捕获异常 */
     }

@@ -4,6 +4,18 @@
    - 入库：invoke kb_submit → kb://task 进度（含已用时）
    ============================================================ */
 
+// 与其他窗口共用同一份主题（localStorage 同源），保证 AI 窗/划词窗与主窗配色一致。
+import { loadTheme, applyTheme } from "./theme/engine.js";
+
+(function bootstrapTheme() {
+  try {
+    const { theme } = loadTheme();
+    applyTheme(theme);
+  } catch (_) {
+    // 主题应用失败不应阻断窗口功能，tokens.css 的浅色默认值仍在
+  }
+})();
+
 const $ = (id) => document.getElementById(id);
 
 function tauriApi() {
@@ -14,7 +26,7 @@ function tauriApi() {
 
 async function call(cmd, args) {
   const api = tauriApi();
-  if (!api) throw new Error("请在 memTools 中打开");
+  if (!api) throw new Error("需在 memTools 中打开");
   return api.core.invoke(cmd, args);
 }
 
@@ -71,7 +83,7 @@ function renderStatus(status) {
   const pathEl = $("root-path");
   if (pathEl) {
     if (!root) {
-      pathEl.textContent = "未设置（点右上角「知识库目录」选择）";
+      pathEl.textContent = "未设置。点右上角「知识库目录」选择。";
       pathEl.className = "root-path err";
     } else {
       pathEl.textContent = root;
@@ -80,7 +92,7 @@ function renderStatus(status) {
     }
   }
   if (!status.enabled) {
-    setChip("知识库已关闭（config.toml）", "warn");
+    setChip("知识库已关闭，见 config.toml", "warn");
   } else if (!status.root_ok) {
     setChip("知识库未就绪：先选目录", "warn");
   } else {
@@ -114,20 +126,20 @@ function updateAgentHint() {
   if (!hint) return;
   const preset = currentPreset();
   if (!preset) {
-    hint.textContent = "选一个本机已安装的 agent，聊天与入库都用它。";
+    hint.textContent = "选一个本机 agent，聊天与入库共用。";
     return;
   }
   const modelCount = state.models.length;
-  const modelNote = modelCount ? `；模型候选 ${modelCount} 个（可下拉选或手填）` : "";
+  const modelNote = modelCount ? `；模型候选 ${modelCount} 个，可下拉选或手填` : "";
   if (preset.ok) {
     const ver = preset.version ? ` ${preset.version}` : "";
     hint.textContent = `${preset.label} 可用：${preset.found || preset.bin || "自动探测"}${ver}${modelNote}`;
   } else {
     // 详细原因放下面的「安装与配置」面板，这里只留一句，别把左栏撑爆
-    hint.textContent = `${preset.label} 未就绪：按下方「安装与配置」操作。`;
+    hint.textContent = `${preset.label} 未就绪。按下方「安装与配置」操作。`;
   }
   if (state.modelsError) {
-    hint.textContent += `（模型列表获取失败：${state.modelsError}）`;
+    hint.textContent += `；模型列表获取失败：${state.modelsError}`;
   }
 }
 
@@ -295,7 +307,7 @@ async function applyAgent() {
   if (!preset.ok) {
     appendMessage(
       "error",
-      `${preset.label} 未就绪：${preset.message || "请按左侧面板安装后再绑定"}`
+      `${preset.label} 未就绪：${preset.message || "按左侧面板安装后再绑定"}`
     );
     renderGuide(preset);
     return;
@@ -312,9 +324,9 @@ async function applyAgent() {
       output: preset.output || "",
     });
     renderStatus(status);
-    const label = `已绑定 ${preset.label}${status.model ? " · " + status.model : "（默认模型）"}`;
+    const label = `已绑定 ${preset.label}${status.model ? " · " + status.model : "，默认模型"}`;
     setChip(label, "ok");
-    appendMessage("tool", `AI 智能体已切换为 ${label}`);
+    appendMessage("tool", `已切换为 ${preset.label}${status.model ? " · " + status.model : ""}`);
   } catch (err) {
     appendMessage("error", "绑定失败：" + messageOf(err));
   }
@@ -554,7 +566,7 @@ function onAiEvent(payload) {
       break;
     case "error":
       stopThinking(state.assistant);
-      appendMessage("error", payload.text || "出错了");
+      appendMessage("error", payload.text || "出错");
       break;
     case "done":
       stopThinking(state.assistant);
@@ -644,7 +656,7 @@ async function toggleContextMenu(enabled) {
     renderStatus(status);
     appendMessage(
       "tool",
-      enabled ? "已注册资源管理器右键菜单（Win11 在「显示更多选项」里）" : "已移除右键菜单"
+      enabled ? "已注册资源管理器右键菜单；Win11 在「显示更多选项」里" : "已移除右键菜单"
     );
   } catch (err) {
     $("context-menu").checked = !enabled;
@@ -751,7 +763,7 @@ async function init() {
   window.setInterval(tickTasks, 1000);
 
   if (!tauriApi()) {
-    setChip("请在 memTools 中打开", "err");
+    setChip("需在 memTools 中打开", "err");
     $("btn-send").disabled = true;
     return;
   }

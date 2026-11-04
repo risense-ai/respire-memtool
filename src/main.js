@@ -5,6 +5,10 @@
 
 import { selectMemories, memoryForest } from "./memory-browser.js";
 import { matchingFragments, queryPattern, evidenceLabel, isDiary } from "./diary-fragments.js";
+import {
+  loadTheme, applyTheme, applyPreset, saveTheme, normalizeTheme, importTheme, exportTheme,
+  PRESETS, DEFAULT_THEME_ID, findPreset, resolveTheme,
+} from "./theme/engine.js";
 
 import { GraphView } from "./graph/graphView.js";
 import { searchGraphNodes } from "./graph/interaction.js";
@@ -74,6 +78,7 @@ const level1 = $("#level-1");
 const level2 = $("#level-2");
 const level3 = $("#level-3");
 const treeGroups = $("#tree-groups");
+const categoryFilter = $("#category-filter");
 const typePills = $("#type-pills");
 const runtimeDot = $("#runtime-dot");
 const autoSwitch = $("#auto-switch");
@@ -130,6 +135,20 @@ const TYPE_OPTIONS = [
   "context", "decision", "preference", "task", "emotion", "time", "skill",
 ];
 let taxonomy = [];            // [{id,name,domain}]
+
+/**
+ * 浏览器预览用的纲清单（仅在 window.__TAURI__ 缺失时启用）。
+ * 真实数据始终以 Tauri 的 get_taxonomy 为准；此表只为「在浏览器里看设计稿」服务，
+ * 不参与任何写入逻辑——预览态本身已明示功能不可用。
+ */
+const PREVIEW_TAXONOMY = [
+  ...["家庭亲友", "健康医疗", "财务理财", "饮食烹饪", "住房家居", "出行交通", "购物消费",
+    "职业工作", "任务计划", "编程开发", "学习成长", "兴趣娱乐", "电子游戏", "运动健身",
+    "社交网络", "旅行游历", "宠物植物", "情感心境", "习惯养成", "灵感创意"]
+    .map((name, i) => ({ id: `preview-human-${i}`, name, domain: "human-domain" })),
+  ...["技能库", "经验库", "踩坑录"]
+    .map((name, i) => ({ id: `preview-ai-${i}`, name, domain: "AI-domain" })),
+];
 let selectedTarget = "main";  // main | journal
 let selectedTree = null;      // 树根 name
 let selectedType = "context";
@@ -267,34 +286,46 @@ function updateTriggerRow(forceShow) {
 
 function renderTree() {
   treeGroups.innerHTML = "";
+  // 23 个纲平铺直排，不设「人域 / AI 域」分组标题。
+  // 顺序沿用后端返回顺序（人域在前、AI 域在后），仅作视觉留白。
   const human = taxonomy.filter((t) => (t.domain || "") === "human-domain" || t.domain === "human");
   const ai = taxonomy.filter((t) => (t.domain || "") === "AI-domain" || t.domain === "ai" || t.domain === "AI");
-  const groups = [
-    { title: "人域 · Human", items: human },
-    { title: "AI 域 · AI", items: ai },
-  ];
-  for (const g of groups) {
-    if (!g.items.length) continue;
-    const box = document.createElement("div");
-    box.className = "tree-group";
-    const label = document.createElement("div");
-    label.className = "tree-group-title";
-    label.textContent = g.title;
-    box.appendChild(label);
-    const chips = document.createElement("div");
-    chips.className = "tree-chips";
-    for (const item of g.items) {
-      const chip = document.createElement("button");
-      chip.className = "tree-chip";
-      chip.textContent = item.name;
-      chip.dataset.name = item.name;
-      chip.dataset.id = item.id;
-      chip.addEventListener("click", () => selectTree(chip));
-      chips.appendChild(chip);
-    }
-    box.appendChild(chips);
-    treeGroups.appendChild(box);
+  const flat = [...human, ...ai];
+  const box = document.createElement("div");
+  box.className = "tree-group";
+  const chips = document.createElement("div");
+  chips.className = "tree-chips tree-chips-flat";
+  for (const item of flat) {
+    const chip = document.createElement("button");
+    chip.className = "tree-chip";
+    chip.type = "button";
+    chip.textContent = item.name;
+    chip.dataset.name = item.name;
+    chip.dataset.id = item.id;
+    chip.addEventListener("click", () => selectTree(chip));
+    chips.appendChild(chip);
   }
+  box.appendChild(chips);
+  treeGroups.appendChild(box);
+  applyCategoryFilter();
+}
+
+/** 按关键词过滤纲标签：只隐藏不匹配项，不影响已选状态 */
+function applyCategoryFilter() {
+  if (!categoryFilter) return;
+  const chipsAll = treeGroups.querySelectorAll(".tree-chip");
+  const q = categoryFilter.value.trim().toLowerCase();
+  let visible = 0;
+  chipsAll.forEach((chip) => {
+    const name = (chip.dataset.name || "").toLowerCase();
+    const hit = !q || name.includes(q);
+    chip.classList.toggle("filtered-out", !hit);
+    if (hit) visible += 1;
+  });
+  // 区分三态：压根没加载到纲 / 加载到了但筛选无结果 / 正常
+  const loaded = chipsAll.length > 0;
+  treeGroups.classList.toggle("is-empty", !loaded);
+  treeGroups.classList.toggle("no-match", loaded && visible === 0);
 }
 
 function selectTree(chip) {
@@ -406,7 +437,7 @@ async function loadGraphSnapshot() {
   graphLoadingFlag = true;
   stopGraphPolling();
   graphLoading.classList.remove("hidden");
-  graphLoadingText.textContent = "正在构建 3D 图谱（首次需读取 m3 向量，约几秒）…";
+  graphLoadingText.textContent = "正在构建 3D 图谱。首次需读取 m3 向量，约几秒。";
   graphEmpty.classList.add("hidden");
   graphStatus.textContent = "构建中…";
   try {
@@ -428,7 +459,7 @@ async function loadGraphSnapshot() {
       note: snap.stats?.note,
     });
     if (!snap.nodes || !snap.nodes.length) {
-      showGraphEmpty("记忆库还是空的", "先在「记录」里存一条，图谱会实时长出来。");
+      showGraphEmpty("暂无记忆", "先在「记录」存一条，图谱会随之更新。");
     }
     startGraphPolling();
   } catch (e) {
@@ -516,8 +547,8 @@ function renderGraphSearch() {
   const summary = document.createElement("div");
   summary.className = "graph-search-summary";
   summary.setAttribute("role", "status");
-  summary.textContent = matches.length ? "匹配 " + matches.length + " 个图谱节点" +
-    (matches.length > 30 ? "，先显示 30 个，请补充关键词" : "") : "没有匹配的图谱节点";
+  summary.textContent = matches.length ? "匹配 " + matches.length + " 个节点" +
+    (matches.length > 30 ? "，仅列前 30 个，请加关键词" : "") : "没有匹配的节点";
   graphSearchResults.appendChild(summary);
   for (const node of matches.slice(0, 30)) {
     const button = document.createElement("button");
@@ -549,7 +580,7 @@ function updateGraphStatus(info = {}) {
   const m = info.links ?? graphView?.links?.length ?? 0;
   const parts = [];
   if (info.msg) parts.push(info.msg);
-  parts.push(`${n} 节点 / ${m} 边`);
+  parts.push(`${n} 节点 · ${m} 边`);
   if (info.event) parts.push(`最近 ${info.event}`);
   if (info.error) parts.push(`同步失败：${info.error}`);
   else parts.push("实时");
@@ -587,7 +618,7 @@ function showGraphDetail(node) {
 
   const body = document.createElement("div");
   body.className = "graph-detail-body";
-  body.textContent = node.content_head || "（无正文预览）";
+  body.textContent = node.content_head || "无正文预览";
 
   const actions = document.createElement("div");
   actions.className = "graph-detail-actions";
@@ -600,7 +631,7 @@ function showGraphDetail(node) {
       await navigator.clipboard.writeText(node.id);
       copy.textContent = "已复制";
     } catch (_) {
-      copy.textContent = "失败";
+      copy.textContent = "复制失败";
     }
     setTimeout(() => (copy.textContent = "复制 id"), 1200);
   });
@@ -636,7 +667,7 @@ async function rebuildGraphLayout() {
   graphLoadingFlag = true;
   stopGraphPolling();
   graphLoading.classList.remove("hidden");
-  graphLoadingText.textContent = "正在重算 PCA 布局（首次可能几秒）…";
+  graphLoadingText.textContent = "正在重算 PCA 布局，首次可能几秒…";
   try {
     const snap = await invoke()("graph_rebuild_layout");
     graphView.setData(snap);
@@ -665,7 +696,7 @@ async function ensureMemoryCatalog(force = false) {
     while (true) {
       const revision = catalogRevision;
       const response = await invoke()("list_recent", { limit: 0, category: null });
-      if (response?.truncated) throw new Error("记忆尚未完整读取，请刷新重试。");
+      if (response?.truncated) throw new Error("记忆未完整读取，请刷新。");
       // 读取期间写入或刷新时，旧响应不能清除新的失效标记。
       if (revision !== catalogRevision) continue;
       memoryCatalog = response?.items || [];
@@ -741,7 +772,7 @@ function renderRecent() {
   const limit = Number(browseCount.value) || 0;
   const matches = limit > 0 ? candidates.slice(0, limit) : candidates;
   browseStatus.className = "browse-status memory-status";
-  browseStatus.textContent = (browseCategory ? "「" + browseCategory + "」 · " : "") + (query ? "匹配 " : "显示 ") + matches.length + " 条 / 当前范围 " + candidates.length + " 条 · 全库 " + (memoryCatalog?.length || 0) + " 条";
+  browseStatus.textContent = (browseCategory ? "「" + browseCategory + "」 · " : "") + (query ? "匹配 " : "显示 ") + matches.length + " 条 · 范围 " + candidates.length + " 条 · 全库 " + (memoryCatalog?.length || 0) + " 条";
   renderMemoryCollection(browseList, matches, browseMode, browseCollapsed, Boolean(query), browseCategory ? "当前分类暂无匹配记忆。" : "没有匹配的记忆。", query);
 }
 
@@ -866,7 +897,7 @@ function buildMemItem(it, query = "") {
   if (it.superseded_by) {
     const note = document.createElement("div");
     note.className = "mem-super";
-    note.textContent = `已被 ${it.superseded_by} 取代 · 点击查看新条`;
+    note.textContent = `已被 ${it.superseded_by} 取代 · 查看新条`;
     note.addEventListener("click", (e) => {
       e.stopPropagation();
       switchView("search");
@@ -922,7 +953,7 @@ function renderSearch(response) {
   const items = response?.items || [];
   searchStatus.className = "browse-status memory-status";
   searchStatus.title = response?.message || "";
-  searchStatus.textContent = (response?.mode === "quick" ? "全库关键词匹配 " : response?.mode === "recall" ? "语义匹配 " : "精确匹配 ") + items.length + " 条" + (searchMode === "tree" && items.length ? response.pathIncomplete ? " · 上级路径未能读取" : memoryCatalog ? " · 保留上级路径" : " · 正在补全上级路径" : "");
+  searchStatus.textContent = (response?.mode === "quick" ? "全库关键词匹配 " : response?.mode === "recall" ? "语义匹配 " : "精确匹配 ") + items.length + " 条" + (searchMode === "tree" && items.length ? response.pathIncomplete ? " · 上级路径未读取" : memoryCatalog ? " · 含上级路径" : " · 补全上级路径中" : "");
   renderMemoryCollection(searchList, items, searchMode, searchCollapsed, true, "没有匹配的记忆。", response?.mode === "quick" ? response.query : "");
 }
 
@@ -979,7 +1010,7 @@ function renderReminders(res) {
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "browse-empty";
-    empty.textContent = "没有带【触发】日期的 task。存 task 时填好日期就会出现在这里。";
+    empty.textContent = "没有带【触发】日期的 task。存 task 时填好日期即可。";
     remindGroups.appendChild(empty);
     return;
   }
@@ -1036,7 +1067,7 @@ function buildReminderItem(it) {
   const done = document.createElement("button");
   done.className = "mini-btn primary";
   done.textContent = "完成";
-  done.title = "在记忆正文追加【完成】并停止提醒（完成前自动备份原文）";
+  done.title = "在正文追加【完成】并停止提醒；会先备份原文";
   done.addEventListener("click", async (e) => {
     e.stopPropagation();
     done.disabled = true;
@@ -1050,14 +1081,14 @@ function buildReminderItem(it) {
       done.title = String(err?.message || err);
       setTimeout(() => {
         done.textContent = "完成";
-        done.title = "在记忆正文追加【完成】并停止提醒（完成前自动备份原文）";
+        done.title = "在正文追加【完成】并停止提醒；会先备份原文";
       }, 1800);
     }
   });
   const dismiss = document.createElement("button");
   dismiss.className = "mini-btn";
   dismiss.textContent = "忽略";
-  dismiss.title = "不再提示（该条触发日期变更后会重新出现）";
+  dismiss.title = "不再提示；触发日期变更后重新出现";
   dismiss.addEventListener("click", async (e) => {
     e.stopPropagation();
     dismiss.disabled = true;
@@ -1153,7 +1184,7 @@ function buildTargetRow(target) {
     markTargetsDirty();
   });
 
-  const up = targetIconBtn("↑", "上移（更优先）", () => moveTargetRow(row, -1));
+  const up = targetIconBtn("↑", "上移，更优先", () => moveTargetRow(row, -1));
   const down = targetIconBtn("↓", "下移", () => moveTargetRow(row, 1));
   const del = targetIconBtn("✕", "删除该目标", () => removeTargetRow(row));
   del.classList.add("target-del");
@@ -1228,7 +1259,7 @@ function refreshTargetBadges() {
     if (i === 0) {
       badge.textContent = "优先";
       badge.classList.add("primary");
-      badge.title = "第 1 个 = 最优先";
+      badge.title = "第 1 个最优先";
     } else {
       badge.textContent = String(i + 1);
       badge.classList.remove("primary");
@@ -1264,7 +1295,7 @@ function renderTargets(list) {
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "browse-empty";
-    empty.textContent = "还没有快捷目标，点「新增目标」加一个。";
+    empty.textContent = "没有快捷目标。点「新增目标」添加。";
     targetsList.appendChild(empty);
   }
   refreshTargetBadges();
@@ -1354,11 +1385,11 @@ async function saveTargets() {
       return;
     }
     if (!t.label) {
-      setTargetsStatus(`第 ${i + 1} 个目标还没起名字`, "err");
+      setTargetsStatus(`第 ${i + 1} 个目标没有名称`, "err");
       return;
     }
     if (t.kind === "tree" && !t.parent) {
-      setTargetsStatus(`第 ${i + 1} 个目标「${t.label}」要挂节点，得先填父节点`, "err");
+      setTargetsStatus(`第 ${i + 1} 个目标「${t.label}」挂在节点下，需先填父节点`, "err");
       return;
     }
   }
@@ -1404,10 +1435,10 @@ async function resetTargets() {
 // ---- 层一切换 ----
 function updateDestination() {
   $("#write-destination").textContent = autoMode
-    ? "去向：自动判断；需要指定上级时请关闭自动化。主记忆仍需核实，日记仅作参考。"
+    ? "去向：自动判断。要指定上级时关闭自动化。主记忆需核实，日记仅作参考。"
     : selectedTarget === "journal"
-      ? "去向：当日活动轨迹（日记），不挂到主记忆树。"
-      : "去向：主记忆 / " + (selectedParent?.title || selectedTree || "请选择上级");
+      ? "去向：当日活动轨迹（日记），不进主记忆树。"
+      : "去向：主记忆 · " + (selectedParent?.title || selectedTree || "请选择上级");
 }
 async function searchParents() {
   const query = $("#parent-query").value.trim();
@@ -1427,7 +1458,7 @@ async function searchParents() {
       });
       container.append(button);
     }
-    if (!items.length) container.textContent = "没有可选的有效主记忆节点。";
+    if (!items.length) container.textContent = "没有可选的主记忆节点。";
   } catch (error) { container.textContent = "读取上级失败：" + String(error?.message || error); }
 }
 async function viewSavedMemory(id) {
@@ -1552,11 +1583,11 @@ function updateProcessBtnTitle() {
   if (!processBtn) return;
   const via = processSourceLabel();
   if (!appConfig.processor_enabled) {
-    processBtn.title = "梳理已关闭（可在来源里选「模型 / opencode / Qoder」）";
+    processBtn.title = "梳理已关闭。在「来源」选「模型」、opencode 或 Qoder。";
   } else if (via === "模型") {
-    processBtn.title = "调用模型梳理内容（总结/结构化/起标题/翻译/提取/润色）";
+    processBtn.title = "调用模型梳理：总结、结构化、起标题、翻译、提取、润色";
   } else {
-    processBtn.title = `调用 ${via} 梳理内容（agent headless；总结/结构化/起标题/翻译/提取/润色）`;
+    processBtn.title = `以无头模式调用 ${via} 梳理：总结、结构化、起标题、翻译、提取、润色`;
   }
 }
 
@@ -1587,7 +1618,7 @@ async function selectProcessorSource(id) {
       setProcHint(
         st.llm?.configured
           ? `模型 ${st.llm.model} · ${st.llm.endpoint}`
-          : "未配置模型端点，请编辑 config.toml [processor] endpoint",
+          : "未配置模型端点。编辑 config.toml 的 [processor] endpoint。",
         st.llm?.configured ? "ok" : "err"
       );
     } else {
@@ -1627,19 +1658,19 @@ function closeProcessBar() {
 async function runProcess(task) {
   const content = getContent();
   if (!content) {
-    setResult("warn", "内容为空", "请先输入要梳理的内容。");
+    setResult("warn", "内容为空", "输入内容后再梳理。");
     return;
   }
   if (!appConfig.processor_enabled) {
     setResult(
       "warn",
       "梳理已关闭",
-      "请在「来源」里选「模型」或 opencode / Qoder 后再试（点选即生效，无需重启）。"
+      "在「来源」选「模型」、opencode 或 Qoder。点选即生效，无需重启。"
     );
     return;
   }
   if (content.length > 8000) {
-    setResult("err", "内容过长", `已 ${content.length} 字，超过 8000 字上限；请拆分后梳理。`);
+    setResult("err", "内容过长", `已 ${content.length} 字，超过 8000 字上限。拆分后再梳理。`);
     return;
   }
   closeProcessBar();
@@ -1649,7 +1680,7 @@ async function runProcess(task) {
     "正在梳理…",
     via === "模型"
       ? "正在调用模型处理内容，请稍候。"
-      : `正在调用 ${via} 处理内容，请稍候（agent 冷启动可能较慢）。`
+      : `正在调用 ${via}，请稍候。agent 冷启动可能较慢。`
   );
   try {
     const res = await invoke()("process_memory", { content, task });
@@ -1660,7 +1691,7 @@ async function runProcess(task) {
     inputEl.value = res.content;
     updateCharCount();
     updateTriggerRow(false);
-    const label = task === "title" ? "已起标题 ✓" : "已梳理 ✓";
+    const label = task === "title" ? "已起标题" : "已梳理";
     setResult("ok", `${label} · ${res.source || processSource()}`, res.content);
     inputEl.focus();
   } catch (e) {
@@ -1672,19 +1703,19 @@ async function runProcess(task) {
 async function submit() {
   const content = getContent();
   if (inputMode === "sections" && !secAction.value.trim()) {
-    setResult("warn", "【行为】为空", "三段模板中「行为」必填：写出做了什么。");
+    setResult("warn", "【行为】为空", "三段模板中「行为」必填，写出做了什么。");
     return;
   }
   if (!content) {
-    setResult("warn", "内容为空", "请先输入要记录的内容。");
+    setResult("warn", "内容为空", "输入内容后再记录。");
     return;
   }
   if (content.length > 8000) {
-    setResult("err", "内容过长", `已 ${content.length} 字，超过 8000 字上限；请拆分后分条记录。`);
+    setResult("err", "内容过长", `已 ${content.length} 字，超过 8000 字上限。拆分后分条记录。`);
     return;
   }
   if (!autoMode && selectedTarget === "main" && !selectedTree && !selectedParent) {
-    setResult("warn", "未选择分类", "主区需要选择一棵分类树，或切换为日记。");
+    setResult("warn", "未选择分类", "主区需选择分类树，或切换为日记。");
     return;
   }
   clearResult();
@@ -1711,11 +1742,11 @@ async function submit() {
       } else if (res.needs_trigger) {
         updateTriggerRow(true);
         triggerInput.focus();
-        setResult("warn", "需要【触发】", res.message || "请填写确认的日期或可核实前提。");
+        setResult("warn", "需要【触发】", res.message || "填写已确认的日期或可核实前提。");
       } else if (res.needs_confirm && (res.candidates || []).length) {
-        renderChoices(res.candidates, content, "判重命中相似记忆，请择一：");
+        renderChoices(res.candidates, content, "判重命中相似记忆，择一处理：");
       } else {
-        setResult("err", "提交失败", res.message || "未知错误，请检查 rsrs runtime。");
+        setResult("err", "提交失败", res.message || "未知错误。检查 rsrs runtime。");
       }
     }
   } catch (e) {
@@ -1741,7 +1772,7 @@ function resetInputs() {
 async function handleAutomation(res, content) {
   if (!res) throw new Error("Rust 命令无返回");
   if (res.needs_confirm || res.phase === "plan") {
-    const head = res.message || "请择一执行：改 / 并 / 挂 / 存新条。";
+    const head = res.message || "择一执行：改、并、挂、存新条。";
     renderChoices(res.candidates || [], content, head);
     return;
   }
@@ -1755,15 +1786,15 @@ async function handleAutomation(res, content) {
 
 async function showDone(action, id, parent, message, branch, importance, title, source) {
   let body =
-    `action  : ${action ?? "-"}\n` +
+    `动作    : ${action ?? "-"}\n` +
     `id      : ${id ?? "-"}\n` +
-    `挂点    : ${parent ?? "（日记，并入当日轨迹）"}\n` +
+    `挂点    : ${parent ?? "日记，并入当日轨迹"}\n` +
     (title ? `标题    : ${title}\n` : "") +
-    (branch ? `分支    : ${branch}${importance ? `（${importance}）` : ""}\n` : "") +
+    (branch ? `分支    : ${branch}${importance ? `，${importance}` : ""}\n` : "") +
     (source ? `判档    : ${source === "model" ? "模型" : "本地"}\n` : "") +
     (message ? `\n${message}` : "");
   body += await donePathLines(id, parent, branch);
-  setResult("ok", "已落库 ✓", body);
+  setResult("ok", "已落库", body);
   flashOk();
   if (id) {
     const view = document.createElement("button"); view.type = "button"; view.className = "mini-btn";
@@ -1876,7 +1907,7 @@ async function doResolve(choice, content) {
     (c) => c.dataset.id
   );
   if (choice !== "create" && checked.length === 0) {
-    setResult("warn", "未选择候选", "请先勾选一条候选记忆。");
+    setResult("warn", "未选择候选", "勾选一条候选记忆。");
     return;
   }
   const treeSel = resultArea.querySelector("#choice-tree");
@@ -1979,7 +2010,7 @@ function initExtensionPanel() {
       const info = await invoke()("extension_info");
       extPort.textContent = info.enabled ? String(info.port) : "未启用";
       extToken.value = info.token || "";
-      extToken.placeholder = info.token ? "" : "未生成：请重启 memTools";
+      extToken.placeholder = info.token ? "" : "未生成。重启 memTools 后生成。";
       closeRsrsPanel();
       hideUpdatePop();
       settingsPanel?.classList.add("hidden");
@@ -2066,12 +2097,12 @@ function describeRsrsStatus(st) {
     if (st.bin) lines.push(`路径：${st.bin}`);
   } else {
     lines.push("未检测到 rsrs 命令。");
-    lines.push("memTools 只连接 rsrs runtime，需要先安装 rsrs CLI。");
+    lines.push("memTools 只连接 rsrs runtime，需先安装 rsrs CLI。");
   }
   if (st.can_install) {
     lines.push(`包管理器：${st.package_manager || "npm"} · 安装包：${st.package}`);
   } else {
-    lines.push("本机没有 npm / pnpm：请先安装 Node.js（https://nodejs.org）后重试。");
+    lines.push("本机没有 npm 或 pnpm。安装 Node.js（https://nodejs.org）后重试。");
   }
   return lines.join("\n");
 }
@@ -2082,7 +2113,7 @@ function renderRsrsStatus(st) {
   rsrsBtn.textContent = st?.installed ? "rsrs" : "装 rsrs";
   rsrsBtn.title = st?.installed
     ? `rsrs ${label}${st.bin ? `\n${st.bin}` : ""}`
-    : "未检测到 rsrs：点击查看安装（首次启动会自动尝试）";
+    : "未检测到 rsrs。点击查看安装；首次启动会自动尝试。";
   rsrsBtn.classList.toggle("warn", !st?.installed);
   rsrsCheck.classList.toggle("hidden", !st?.installed || rsrsRestartArmed);
   rsrsRestart?.classList.toggle("hidden", !st?.installed || rsrsRestartArmed);
@@ -2113,7 +2144,7 @@ async function startRsrsInstall() {
   rsrsBtn.classList.add("busy");
   rsrsTitle.textContent = "rsrs · 安装中";
   rsrsBody.textContent =
-    "正在用 npm / pnpm 全局安装 rsrs（需要联网）。\n此过程不会启动、停止或重启 rsrs runtime。";
+    "用 npm 或 pnpm 全局安装 rsrs，需要联网。\n此过程不会启动、停止或重启 rsrs runtime。";
   rsrsBar.classList.remove("hidden");
   rsrsBarFill.style.width = "0%";
   rsrsLog.textContent = "准备…";
@@ -2127,7 +2158,7 @@ async function startRsrsInstall() {
     renderRsrsStatus(st);
     const current = rsrsVersionLabel(st);
     rsrsTitle.textContent = "rsrs · 校验版本";
-    rsrsBody.textContent = `${wasInstalled ? "已更新到" : "已安装"} ${current}，正在确认是否已是最新…`;
+    rsrsBody.textContent = `${wasInstalled ? "已更新到" : "已安装"} ${current}，确认是否已是最新…`;
     // 安装后立刻回查 registry：用户点「更新到最新版」后应看到明确的
     // 「已是最新」，而不是停在“已更新到 vX”的安装结果上。
     let check = null;
@@ -2141,8 +2172,8 @@ async function startRsrsInstall() {
         `${wasInstalled ? "已更新到" : "已安装"} ${current}（registry 最新 v${check.latest}）。`,
         bin,
         wasInstalled
-          ? "运行中的 runtime 仍是旧二进制；点「重启 rsrs」并确认后，memTools 才会代为重启。"
-          : "runtime 由 rsrs 或宿主应用启动；需要时点「重启 rsrs」让服务使用新版本。",
+          ? "运行中的 runtime 仍为旧二进制。点「重启 rsrs」并确认后，memTools 代为重启。"
+          : "runtime 由 rsrs 或宿主应用启动。需要时点「重启 rsrs」切换到新版本。",
       ]
         .filter(Boolean)
         .join("\n");
@@ -2152,8 +2183,8 @@ async function startRsrsInstall() {
       rsrsBody.textContent = [
         `当前仍是 ${current}，registry 最新 v${check.latest}。`,
         bin,
-        "通常说明本机存在多套 rsrs（npm / pnpm / 旧包名），PATH 仍指向另一套。",
-        `可在终端执行：${check.package_manager} install -g ${check.package}@latest`,
+        "通常说明本机装了多套 rsrs（npm、pnpm、旧包名），PATH 指向另一套。",
+        `在终端执行：${check.package_manager} install -g ${check.package}@latest`,
       ]
         .filter(Boolean)
         .join("\n");
@@ -2165,7 +2196,7 @@ async function startRsrsInstall() {
         bin,
         wasInstalled
           ? "运行中的 runtime 仍在使用旧二进制；点「重启 rsrs」并确认后才会切换到新版本。"
-          : "runtime 由 rsrs 或宿主应用启动；需要时点「重启 rsrs」让服务使用新版本。",
+          : "runtime 由 rsrs 或宿主应用启动。需要时点「重启 rsrs」切换到新版本。",
         "若底栏 runtime 仍离线，可点「重启 rsrs」或先执行一次 rsrs 命令。",
       ]
         .filter(Boolean)
@@ -2202,12 +2233,12 @@ async function checkRsrsUpdate() {
     const installed = r.installed ? `v${r.installed}` : rsrsVersionLabel(rsrsStatus);
     if (r.has_update) {
       rsrsTitle.textContent = "发现 rsrs 新版本";
-      rsrsBody.textContent = `当前 ${installed} · 最新 v${r.latest}\n将使用 ${r.package_manager} 全局安装 ${r.package}`;
+      rsrsBody.textContent = `当前 ${installed} · 最新 v${r.latest}\n用 ${r.package_manager} 全局安装 ${r.package}`;
       rsrsInstall.textContent = `更新到 v${r.latest}`;
       rsrsInstall.classList.remove("hidden");
     } else {
       rsrsTitle.textContent = "rsrs 已是最新";
-      rsrsBody.textContent = `当前 ${installed} · registry 最新 v${r.latest}\n如需让运行中的 runtime 切换到新二进制，点「重启 rsrs」并确认。`;
+      rsrsBody.textContent = `当前 ${installed} · registry 最新 v${r.latest}\n要让运行中的 runtime 切换到新二进制，点「重启 rsrs」并确认。`;
       rsrsInstall.textContent = "重新安装最新版";
       rsrsInstall.classList.toggle("hidden", !rsrsStatus?.can_install);
     }
@@ -2243,9 +2274,9 @@ function armRsrsRestart() {
   rsrsRestartArmed = true;
   rsrsTitle.textContent = "确认重启 rsrs？";
   rsrsBody.textContent = [
-    "会先停止当前 rsrs runtime，再由 rsrs 拉起新版本。",
-    "重启期间（几秒到十几秒）记忆读写会暂时失败，进行中的操作需要重试。",
-    "只有你点「确认重启」才会执行；memTools 不会自行重启服务。",
+    "先停止当前 runtime，再由 rsrs 拉起新版本。",
+    "重启期间（几秒到十几秒）读写失败，进行中操作需重试。",
+    "点「确认重启」才执行，memTools 不自行重启服务。",
   ].join("\n");
   rsrsBar.classList.add("hidden");
   rsrsLog.classList.add("hidden");
@@ -2278,7 +2309,7 @@ async function startRsrsRestart() {
   if (rsrsRestart) rsrsRestart.disabled = true;
   if (rsrsRestartCancel) rsrsRestartCancel.disabled = true;
   rsrsTitle.textContent = "rsrs · 正在重启";
-  rsrsBody.textContent = "正在停止旧 runtime 并拉起新版本，请稍候…";
+  rsrsBody.textContent = "正在停止旧 runtime 并拉起新版本…";
   rsrsBar.classList.remove("hidden");
   rsrsBarFill.style.width = "45%";
   rsrsLog.classList.add("hidden");
@@ -2424,7 +2455,7 @@ async function toggleAutostart(enabled) {
 async function ensureRuntimeNow() {
   if (!window.__TAURI__?.core || !runtimeStart) return;
   runtimeStart.disabled = true;
-  setRuntimeCheckStatus("正在检查 rsrs runtime；离线时会尝试启动…");
+  setRuntimeCheckStatus("正在检查 rsrs runtime；离线时尝试启动…");
   try {
     const out = await invoke()("runtime_ensure");
     setRuntimeCheckStatus(out?.message || "", out?.online ? "ok" : "warn");
@@ -2434,6 +2465,281 @@ async function ensureRuntimeNow() {
   } finally {
     runtimeStart.disabled = false;
   }
+}
+
+// ---- 主题引擎 ----
+
+/** 当前生效的主题对象（面板编辑与导出都以它为准） */
+let activeTheme = null;
+let activePresetId = DEFAULT_THEME_ID;
+
+/** 启动时加载并应用主题；随后挂载面板交互（不依赖 Tauri，浏览器预览同样可用） */
+function initTheme() {
+  const { theme, presetId, warnings } = loadTheme();
+  activeTheme = applyTheme(theme);
+  activePresetId = presetId;
+  if (warnings.length && typeof console !== "undefined") {
+    console.warn("[theme] 已修正非法值：", warnings);
+  }
+  initThemePanel();
+  return activeTheme;
+}
+
+/** 应用并持久化一个主题对象 */
+function commitTheme(theme) {
+  activeTheme = applyTheme(theme);
+  saveTheme(activeTheme, activePresetId);
+  syncThemePanel();
+}
+
+/** 把当前主题回写到面板控件（避免面板与生效值不一致） */
+function syncThemePanel() {
+  const panel = $("#theme-panel");
+  if (!panel || !activeTheme) return;
+  const t = activeTheme;
+  const set = (sel, val) => {
+    const el = $(sel);
+    if (!el) return;
+    if (el.type === "checkbox") el.checked = !!val;
+    else el.value = val ?? "";
+  };
+  set("#theme-color-bg", t.tokens.color.bg.base);
+  set("#theme-color-surface", t.tokens.color.bg.raised);
+  set("#theme-color-sunken", t.tokens.color.bg.sunken);
+  set("#theme-color-text", t.tokens.color.text.primary);
+  set("#theme-color-dim", t.tokens.color.text.secondary);
+  set("#theme-color-accent", t.tokens.color.accent.base);
+  set("#theme-color-line", t.tokens.color.line.base);
+  set("#theme-font-ui", t.tokens.typography.fontUi);
+  set("#theme-font-brand", t.tokens.typography.fontBrand);
+  set("#theme-radius", parseFloat(t.tokens.shape.radius.md) || 0);
+  set("#theme-border", parseFloat(t.tokens.shape.border.width) || 1);
+  set("#theme-space", parseFloat(t.tokens.density.space.md) || 12);
+  set("#theme-ctl-h", parseFloat(t.tokens.density.control.height) || 28);
+  set("#theme-layout-mode", t.layout.main.mode[0]);
+  set("#theme-col-b", parseFloat(t.layout.main.mode[2]) || 188);
+  set("#theme-show-header", t.layout.regions.visible.header !== false);
+  set("#theme-show-tabs", t.layout.regions.visible.tabs !== false);
+  set("#theme-show-status", t.layout.regions.visible.status !== false);
+  set("#theme-target-first", (t.layout.main.order || [])[0] === "target");
+  const nameEl = $("#theme-current-name");
+  if (nameEl) nameEl.textContent = t.name || "自定义";
+  // 滑块数值回显刷新
+  for (const sel of ["#theme-radius", "#theme-border", "#theme-space", "#theme-ctl-h", "#theme-col-b"]) {
+    const el = $(sel);
+    if (el && el.__mirror) el.__mirror();
+  }
+  // 预设卡片高亮
+  document.querySelectorAll("#theme-presets [data-preset]").forEach((card) => {
+    card.classList.toggle("active", card.dataset.preset === activePresetId);
+  });
+}
+
+/** 面板交互：预设 / 令牌 / 布局 / 导入导出 */
+function initThemePanel() {
+  const panel = $("#theme-panel");
+  if (!panel) return;
+
+  // 开关
+  const openBtn = $("#theme-btn");
+  const closeBtn = $("#theme-close");
+  const close = () => panel.classList.add("hidden");
+  openBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    panel.classList.toggle("hidden");
+    syncThemePanel();
+  });
+  closeBtn?.addEventListener("click", close);
+  document.addEventListener("click", (e) => {
+    if (panel.classList.contains("hidden")) return;
+    if (panel.contains(e.target) || openBtn?.contains(e.target)) return;
+    close();
+  });
+
+  // 滑块数值回显
+  const mirrors = [
+    ["#theme-radius", "#theme-radius-val", "px"],
+    ["#theme-border", "#theme-border-val", "px"],
+    ["#theme-space", "#theme-space-val", "px"],
+    ["#theme-ctl-h", "#theme-ctl-h-val", "px"],
+    ["#theme-col-b", "#theme-col-b-val", "px"],
+  ];
+  for (const [src, dst, unit] of mirrors) {
+    const s = $(src);
+    const d = $(dst);
+    if (!s || !d) continue;
+    const upd = () => { d.textContent = `${s.value}${unit}`; };
+    s.addEventListener("input", upd);
+    s.__mirror = upd;
+  }
+
+  // 预设卡片
+  const presetBox = $("#theme-presets");
+  if (presetBox && !presetBox.childElementCount) {
+    for (const p of PRESETS) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "theme-card";
+      card.dataset.preset = p.id;
+      const swatch = document.createElement("span");
+      swatch.className = "theme-swatch";
+      swatch.style.background = p.tokens.color.bg.base;
+      swatch.style.borderColor = p.tokens.color.line.base;
+      swatch.dataset.accent = p.tokens.color.accent.base;
+      const dot = document.createElement("i");
+      dot.style.background = p.tokens.color.accent.base;
+      swatch.appendChild(dot);
+      const name = document.createElement("span");
+      name.className = "theme-card-name";
+      name.textContent = p.name;
+      const desc = document.createElement("span");
+      desc.className = "theme-card-desc";
+      desc.textContent = p.desc || "";
+      card.append(swatch, name, desc);
+      card.addEventListener("click", () => {
+        activePresetId = p.id;
+        const theme = resolveTheme(findPreset(p.id));
+        theme.id = p.id;
+        theme.name = p.name;
+        commitTheme(theme);
+      });
+      presetBox.appendChild(card);
+    }
+  }
+
+  // 令牌编辑：任何控件变化都即时重算并应用
+  const bindings = [
+    ["#theme-color-bg", "tokens.color.bg.base"],
+    ["#theme-color-surface", "tokens.color.bg.raised"],
+    ["#theme-color-sunken", "tokens.color.bg.sunken"],
+    ["#theme-color-text", "tokens.color.text.primary"],
+    ["#theme-color-dim", "tokens.color.text.secondary"],
+    ["#theme-color-accent", "tokens.color.accent.base"],
+    ["#theme-color-line", "tokens.color.line.base"],
+  ];
+  const setPath = (obj, path, value) => {
+    const keys = path.split(".");
+    let cur = obj;
+    for (let i = 0; i < keys.length - 1; i += 1) cur = cur[keys[i]];
+    cur[keys[keys.length - 1]] = value;
+  };
+  for (const [sel, path] of bindings) {
+    const el = $(sel);
+    if (!el) continue;
+    el.addEventListener("input", () => {
+      const t = structuredClone(activeTheme);
+      setPath(t, path, el.value);
+      commitTheme(normalizeTheme(t, activePresetId).theme);
+    });
+  }
+
+  const textBindings = [
+    ["#theme-font-ui", "tokens.typography.fontUi"],
+    ["#theme-font-brand", "tokens.typography.fontBrand"],
+  ];
+  for (const [sel, path] of textBindings) {
+    const el = $(sel);
+    if (!el) continue;
+    el.addEventListener("change", () => {
+      const t = structuredClone(activeTheme);
+      setPath(t, path, el.value);
+      commitTheme(t);
+    });
+  }
+
+  const rangeBindings = [
+    ["#theme-radius", "tokens.shape.radius.md", (v) => `${v}px`],
+    ["#theme-radius", "tokens.shape.radius.lg", (v) => `${v}px`],
+    ["#theme-border", "tokens.shape.border.width", (v) => `${v}px`],
+    ["#theme-space", "tokens.density.space.md", (v) => `${v}px`],
+    ["#theme-ctl-h", "tokens.density.control.height", (v) => `${v}px`],
+  ];
+  for (const [sel, path, fmt] of rangeBindings) {
+    const el = $(sel);
+    if (!el) continue;
+    el.addEventListener("input", () => {
+      const t = structuredClone(activeTheme);
+      setPath(t, path, fmt(el.value));
+      commitTheme(normalizeTheme(t, activePresetId).theme);
+    });
+  }
+
+  // 布局：分栏模式 / 右栏宽 / 区域显隐 / 面板次序
+  const modeSel = $("#theme-layout-mode");
+  modeSel?.addEventListener("change", () => {
+    const t = structuredClone(activeTheme);
+    const kind = modeSel.value;
+    t.layout.main.mode = kind === "stack"
+      ? ["stack"]
+      : ["split", "1fr", `${parseFloat($("#theme-col-b")?.value) || 188}px`];
+    commitTheme(normalizeTheme(t, activePresetId).theme);
+  });
+  $("#theme-col-b")?.addEventListener("input", (e) => {
+    const t = structuredClone(activeTheme);
+    if (t.layout.main.mode[0] === "split") {
+      t.layout.main.mode = ["split", "1fr", `${parseFloat(e.target.value) || 188}px`];
+      commitTheme(normalizeTheme(t, activePresetId).theme);
+    }
+  });
+  for (const [sel, region] of [
+    ["#theme-show-header", "header"],
+    ["#theme-show-tabs", "tabs"],
+    ["#theme-show-status", "status"],
+  ]) {
+    $(sel)?.addEventListener("change", (e) => {
+      const t = structuredClone(activeTheme);
+      t.layout.regions.visible[region] = e.target.checked;
+      commitTheme(t);
+    });
+  }
+  $("#theme-target-first")?.addEventListener("change", (e) => {
+    const t = structuredClone(activeTheme);
+    t.layout.main.order = e.target.checked ? ["target", "input"] : ["input", "target"];
+    commitTheme(t);
+  });
+
+  // 导入 / 导出 / 重置
+  $("#theme-reset")?.addEventListener("click", () => {
+    activePresetId = activePresetId || DEFAULT_THEME_ID;
+    const p = findPreset(activePresetId);
+    const theme = resolveTheme(p);
+    theme.id = p.id;
+    theme.name = p.name;
+    commitTheme(theme);
+  });
+  $("#theme-export")?.addEventListener("click", async () => {
+    const json = exportTheme(activeTheme);
+    const out = $("#theme-io");
+    if (out) out.value = json;
+    try {
+      await navigator.clipboard.writeText(json);
+      $("#theme-io-status").textContent = "已导出并复制到剪贴板";
+    } catch (_) {
+      $("#theme-io-status").textContent = "已导出到文本框，请手动复制";
+    }
+  });
+  $("#theme-import")?.addEventListener("click", () => {
+    const status = $("#theme-io-status");
+    const raw = ($("#theme-io")?.value || "").trim();
+    if (!raw) {
+      status.textContent = "请先粘贴主题 JSON";
+      return;
+    }
+    try {
+      const { theme, warnings } = importTheme(raw);
+      activeTheme = theme;
+      activePresetId = PRESETS.some((p) => p.id === theme.id) ? theme.id : DEFAULT_THEME_ID;
+      saveTheme(activeTheme, activePresetId);
+      syncThemePanel();
+      status.textContent = warnings.length
+        ? `已导入，修正 ${warnings.length} 处：${warnings[0]}`
+        : "已导入";
+    } catch (e) {
+      status.textContent = `导入失败：${e?.message || e}`;
+    }
+  });
+
+  syncThemePanel();
 }
 
 async function initSettingsPanel() {
@@ -2566,19 +2872,38 @@ async function init() {
   $("#parent-query").addEventListener("input", () => {
     clearTimeout(parentTimer); parentTimer = setTimeout(searchParents, 180);
   });
+  // 分类纲即时筛选（纯前端，不影响选中态）
+  if (categoryFilter) categoryFilter.addEventListener("input", applyCategoryFilter);
+  // 主题引擎：在任何 Tauri 依赖之前应用，保证浏览器预览也能看到主题
+  initTheme();
   if (window.__memtoolsInit) return;
   window.__memtoolsInit = true;
   // 兜底守卫：Tauri 2 默认不注入 window.__TAURI__（需 withGlobalTauri: true）。
   // 缺失时明确提示而非静默，UI 骨架仍完整渲染，不阻塞界面。
   if (!window.__TAURI__?.core || !window.__TAURI__?.event) {
     document.getElementById("win-grips")?.remove();
+    // 浏览器预览：用静态纲清单把界面骨架渲染出来，便于看设计与主题；
+    // 真实数据始终以 Tauri 的 get_taxonomy 为准，此分支不参与任何写入。
+    taxonomy = PREVIEW_TAXONOMY;
+    renderTree();
+    renderTypes();
+    // 新布局：纲列表常驻，初始化即展开当前去向对应层级
+    setTarget(selectedTarget);
     setResult(
       "err",
-      "请在 memTools 窗口中使用",
-      "当前页面不是 Tauri 运行时（window.__TAURI__ 未注入）。\n" +
-        "若你是在浏览器打开 http://localhost:1420，功能不可用。\n" +
-        "请改用应用窗口：按全局热键 Ctrl+Alt+R 唤起 memTools 小窗。"
+      "当前页面不是 Tauri 运行时",
+      "window.__TAURI__ 未注入，功能不可用。\n" +
+        "在浏览器打开 http://localhost:1420 即此情况。\n" +
+        "改用应用窗口：按 Ctrl+Alt+R 唤起 memTools。"
     );
+    // 预览态：视图切换是纯 DOM 行为，照常可用（图谱要拉数据，失败静默），
+    // 便于在浏览器里核对各视图版式与主题。
+    viewTabs.querySelectorAll(".view-tab").forEach((b) =>
+      b.addEventListener("click", () => {
+        try { switchView(b.dataset.view); } catch (_) {}
+      })
+    );
+    try { switchView("write"); } catch (_) {}
     return;
   }
 
@@ -2611,10 +2936,8 @@ async function init() {
   renderTree();
   renderTypes();
   renderBrowseCats();
-  if (taxonomy.length) {
-    const first = treeGroups.querySelector(".tree-chip");
-    if (first) selectTree(first);
-  }
+  // 新布局：纲列表常驻（旧版需先点「主区」才出现），初始化即展开到当前去向
+  setTarget(selectedTarget);
 
   // 键盘：Ctrl+Enter 提交（记录视图），Esc 隐藏；浏览视图的条数框回车即刷新
   document.addEventListener("keydown", (e) => {
@@ -2650,7 +2973,7 @@ async function init() {
     searchReq++; clearTimeout(searchTimer);
     searchKind.querySelectorAll("[data-kind]").forEach(item => { const active = item === button; item.classList.toggle("active", active); item.setAttribute("aria-pressed", String(active)); });
     $("#search-count-wrap").classList.toggle("hidden", searchKindValue === "quick");
-    searchInput.placeholder = searchKindValue === "quick" ? "快速搜索全部记忆的标题、正文或 id" : "描述要查找的内容，或粘贴 id";
+    searchInput.placeholder = searchKindValue === "quick" ? "快速搜索全部记忆的标题、正文或 id" : "描述查找内容，或粘贴 id";
     runSearch();
   }));
   searchInput.addEventListener("input", () => {
@@ -2872,7 +3195,7 @@ async function init() {
       setProcessVisible(true);
       await loadProcessorStatus();
       if (!appConfig.processor_enabled) {
-        setProcHint("梳理已关闭：选一个来源即可启用", "err");
+        setProcHint("梳理已关闭。选一个来源启用。", "err");
       }
     } else {
       closeProcessBar();
@@ -2953,7 +3276,7 @@ async function checkRuntime() {
     } else {
       runtimeDot.classList.add("offline");
       runtimeDot.classList.remove("online");
-      runtimeDot.title = st?.message || "rsrs runtime 不可达 — 由宿主启动服务后自动恢复";
+      runtimeDot.title = st?.message || "rsrs runtime 不可达，宿主启动服务后自动恢复";
       syncBadge.classList.add("hidden");
     }
   } catch (_) {
@@ -2979,9 +3302,9 @@ function applySyncBadge(st) {
   syncBadge.classList.toggle("warn", !!st?.offline);
   const tip = [
     st?.offline
-      ? "离线不丢：本地已落库，rsrs 下次 sync 自动补传"
+      ? "离线不丢：本地已落库，rsrs 下次 sync 补传"
       : "rsrs 后台同步中",
-    conflicts > 0 ? `历史冲突 ${conflicts} 条（不影响本地写入）` : "",
+    conflicts > 0 ? `历史冲突 ${conflicts} 条，不影响本地写入` : "",
     st?.last_sync ? `上次成功同步 ${fmtTime(new Date(Number(st.last_sync) * 1000).toISOString())}` : "",
   ].filter(Boolean);
   syncBadge.title = tip.join(" · ");

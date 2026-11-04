@@ -1,0 +1,136 @@
+/* ============================================================
+   layout.css — 布局骨架（可配置）
+
+   由 engine.js 写入 documentElement 的属性驱动：
+     data-theme          当前主题 id
+     data-layout         布局预设 id
+     data-layout-mode    split | stack
+   以及 CSS 变量：
+     --layout-header-h / --layout-tabs-h / --layout-status-h
+     --layout-col-a / --layout-col-b / --layout-gap
+     --layout-stack-below
+     --layout-input-order / --layout-target-order
+     --layout-{header,tabs,status}-display
+
+   铁律：此文件只管「骨架与位置」，不写颜色（颜色在 tokens/组件层）。
+   ============================================================ */
+
+/* ---------- 应用外壳：扁平、无毛玻璃、无渐变 ---------- */
+.shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-md);
+  gap: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--c-bg);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  overflow: hidden;
+  color: var(--c-text);
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+}
+
+/* 移除旧版的氛围光晕 */
+.shell::before { content: none; background: none; }
+.shell > * { position: relative; z-index: auto; }
+
+/* ---------- 区域：可显隐、可定高 ---------- */
+.titlebar {
+  flex: 0 0 auto;
+  display: var(--layout-header-display, flex);
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--layout-header-h);
+  padding: 0;
+  gap: var(--sp-sm);
+}
+
+.view-tabs {
+  flex: 0 0 auto;
+  display: var(--layout-tabs-display, flex);
+  align-items: stretch;
+  min-height: var(--layout-tabs-h);
+}
+
+.statusbar {
+  flex: 0 0 auto;
+  display: var(--layout-status-display, flex);
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--layout-status-h);
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.content {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ---------- 写入视图：分栏骨架 ---------- */
+
+/* split：输入区与目标面板并排 */
+#view-write.write-content {
+  display: grid;
+  grid-template-columns: var(--layout-col-a) var(--layout-col-b);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--layout-gap);
+  align-items: stretch;
+}
+
+/* stack：纵向堆叠（窄窗自动降级） */
+:root[data-layout-mode="stack"] #view-write.write-content,
+:root[data-layout-mode="auto"] #view-write.write-content {
+  grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, auto) minmax(0, 1fr);
+}
+
+/* 面板次序可互换 */
+#view-write .write-primary { order: var(--layout-input-order, 0); min-width: 0; min-height: 0; }
+#view-write .write-secondary { order: var(--layout-target-order, 1); min-width: 0; min-height: 0; }
+
+.write-primary {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.write-secondary {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--sp-sm);
+}
+
+/* ---------- 响应式：窄窗自动降级为堆叠 ---------- */
+@media (max-width: 459px) {
+  :root[data-layout-mode="split"] #view-write.write-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, auto) minmax(0, 1fr);
+  }
+}
+
+/* ---------- 统一控件基线：高度与间距走密度令牌 ---------- */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: var(--fs-body);
+  color: inherit;
+}
+
+/* 焦点可见性统一（可访问性，主题无关） */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}

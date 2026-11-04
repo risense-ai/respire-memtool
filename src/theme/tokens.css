@@ -1,0 +1,110 @@
+/* ============================================================
+   tokens.css — 令牌基底（结构性兜底值）
+   四套主题的实际取值由 src/theme/presets.js 经 engine.js 写入
+   documentElement 的行内样式；此处只保证「JS 未运行前」也有可用的
+   浅色默认，避免首次绘制闪深色或读不清。
+
+   铁律：组件样式只引用 var(--*)，不得写死色值。
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- 色彩：底 / 线 / 文 / 强调 / 状态 ---- */
+  --c-bg: #ffffff;
+  --c-bg-raised: #ffffff;
+  --c-bg-sunken: #f7f8fa;
+  --c-line: #e5e8ed;
+  --c-line-soft: #eff1f4;
+  --c-text: #17191e;
+  --c-text-dim: #59616d;
+  --c-text-faint: #8b939f;
+  --c-accent: #2f6feb;
+  --c-on-accent: #ffffff;
+  --c-accent-soft: #f1f5fe;
+  --c-success: #1b7f4b;
+  --c-success-soft: #e9f6ef;
+  --c-warning: #9a6100;
+  --c-warning-soft: #fcf3e4;
+  --c-danger: #c0392b;
+  --c-danger-soft: #fbebe9;
+
+  /* ---- 字体 ---- */
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --font-brand: var(--font);
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  --fs-label: 11px;
+  --fs-body: 13px;
+  --fs-title: 20px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-strong: 600;
+  --ls-tight: -0.011em;
+  --ls-normal: 0;
+  --ls-wide: 0.06em;
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+
+  /* ---- 形状 ---- */
+  --r-none: 0px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --bw: 1px;
+  --sh-card: 0 1px 2px rgba(23, 25, 30, 0.06);
+  --sh-pop: 0 10px 28px rgba(23, 25, 30, 0.14);
+
+  /* ---- 密度 ---- */
+  --sp-xs: 4px;
+  --sp-sm: 8px;
+  --sp-md: 12px;
+  --sp-lg: 16px;
+  --sp-xl: 24px;
+  --ctl-h: 28px;
+  --ctl-gap: 8px;
+
+  /* ---- 布局（由 engine 覆盖） ---- */
+  --layout-header-h: 44px;
+  --layout-tabs-h: 36px;
+  --layout-status-h: 36px;
+  --layout-gap: var(--sp-md);
+  --layout-col-a: 1fr;
+  --layout-col-b: 188px;
+  --layout-stack-below: 460px;
+  --layout-input-order: 0;
+  --layout-target-order: 1;
+
+  /* ---- 过渡用的语义别名（供既有规则引用） ---- */
+  --button-hover: color-mix(in srgb, var(--c-text) 6%, transparent);
+  --button-active: color-mix(in srgb, var(--c-text) 10%, transparent);
+  --focus-ring: color-mix(in srgb, var(--c-accent) 45%, transparent);
+}
+
+/* 旧令牌别名：让尚未令牌化的既有规则继续可用（迁移期兜底）。
+   styles.css 完成令牌化后应逐步删除，最终只保留新令牌。 */
+:root {
+  --bg-base: var(--c-bg);
+  --bg-glass: var(--c-bg);
+  --bg-glass-strong: var(--c-bg-raised);
+  --bg-input: var(--c-bg-sunken);
+  --border: var(--c-line-soft);
+  --border-strong: var(--c-line);
+  --text: var(--c-text);
+  --text-dim: var(--c-text-dim);
+  --text-faint: var(--c-text-faint);
+  --accent: var(--c-accent);
+  --accent-2: var(--c-accent);
+  --accent-grad: var(--c-accent);
+  --accent-soft: var(--c-accent-soft);
+  --green: var(--c-success);
+  --green-soft: var(--c-success-soft);
+  --red: var(--c-danger);
+  --red-soft: var(--c-danger-soft);
+  --amber: var(--c-warning);
+  --amber-soft: var(--c-warning-soft);
+  --radius: var(--r-lg);
+  --radius-sm: var(--r-md);
+  --shadow: var(--sh-pop);
+  --mono: var(--font-mono);
+}
