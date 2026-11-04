@@ -39,3 +39,10 @@ devtools/*.png
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 设计与验收过程产物：规格文档入库，大图与机器专属脚本不入库
+design/gemini/
+design/shots/
+design/tools/
+design/mockups/
+design/before-main.png

@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>memTools · AI 与知识库</title>
+  <link rel="stylesheet" href="./src/theme/tokens.css" />
   <link rel="stylesheet" href="./src/ai.css" />
 </head>
 <body>
@@ -27,21 +28,21 @@
         <div id="root-path" class="root-path">未设置</div>
         <div class="row">
           <button id="btn-add-folder" class="btn small" type="button">添加文件夹</button>
-          <label class="switch" title="在资源管理器右键菜单里加入「添加到 memTools 知识库」">
+          <label class="switch" title="在资源管理器右键菜单添加「添加到 memTools 知识库」">
             <input id="context-menu" type="checkbox" />
             <span>右键菜单</span>
           </label>
         </div>
         <div class="row">
           <select id="agent-select" class="input" aria-label="AI 智能体"></select>
-          <button id="btn-agent-refresh" class="btn small" type="button" title="重新检测本机已安装的 agent">重新检测</button>
+          <button id="btn-agent-refresh" class="btn small" type="button" title="重新检测本机 agent">重新检测</button>
         </div>
         <div class="row">
-          <input id="agent-model" class="input" type="text" placeholder="模型（可从下拉选，也可手填）" spellcheck="false" list="agent-model-options" />
+          <input id="agent-model" class="input" type="text" placeholder="模型：可下拉选，也可手填" spellcheck="false" list="agent-model-options" />
           <datalist id="agent-model-options"></datalist>
           <button id="btn-agent-save" class="btn small" type="button">绑定</button>
         </div>
-        <p class="hint" id="agent-hint">选一个本机已安装的 agent，聊天与入库都用它。</p>
+        <p class="hint" id="agent-hint">选一个本机 agent，聊天与入库共用。</p>
         <div class="guide hidden" id="agent-guide">
           <div class="guide-head">
             <span id="agent-guide-title"></span>
@@ -50,14 +51,14 @@
           <pre id="agent-guide-body"></pre>
         </div>
         <div class="row">
-          <input id="path-input" class="input" type="text" placeholder="粘贴文件 / 文件夹路径" spellcheck="false" />
+          <input id="path-input" class="input" type="text" placeholder="粘贴文件或文件夹路径" spellcheck="false" />
           <button id="btn-add-path" class="btn small" type="button">添加</button>
         </div>
         <div class="row">
           <input id="url-input" class="input" type="text" placeholder="https://… 解析网页" spellcheck="false" />
           <button id="btn-add-url" class="btn small" type="button">解析</button>
         </div>
-        <p class="hint">也可以把文件或文件夹直接拖进这个窗口。</p>
+        <p class="hint">也可把文件或文件夹拖进本窗口。</p>
       </section>
 
       <section class="card grow">
@@ -69,12 +70,12 @@
     <section class="chat">
       <div id="messages" class="messages">
         <div class="empty" id="chat-empty">
-          <p>这是 memTools 的 AI 窗口。</p>
-          <p class="dim">可以聊天，也可以把资料交给本地 agent 整理进知识库；整理结果会同时写入 rsrs 记忆。</p>
+          <p>聊天，或把资料交给本地 agent 入库。</p>
+          <p class="dim">整理结果同时写入 rsrs 记忆。</p>
         </div>
       </div>
       <div class="composer">
-        <textarea id="chat-input" rows="3" placeholder="问点什么，或描述要调研的主题…（Enter 发送，Shift+Enter 换行）" spellcheck="false"></textarea>
+        <textarea id="chat-input" rows="3" placeholder="输入问题或调研主题。Enter 发送，Shift+Enter 换行。" spellcheck="false"></textarea>
         <div class="composer-actions">
           <button id="btn-send" class="btn primary" type="button">发送</button>
           <button id="btn-stop" class="btn" type="button" disabled>停止</button>

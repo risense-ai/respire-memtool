@@ -9,6 +9,19 @@ import { buildContainerVolume } from "./containerVolume.js";
 import { pickProjectedNode, isGraphClick } from "./interaction.js";
 
 const GOLDEN_ANGLE = 137.508;
+
+/**
+ * 读取主题令牌：3D 场景无法直接用 CSS 变量，故运行时取值。
+ * 主题切换后若画布颜色不符，重建图谱即按新令牌重绘。
+ */
+function cssVar(name, fallback) {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
 const FOCUS_HOLD_MS = 6000;
 const FOCUS_LEVELS_DEFAULT = 3;
 const FOCUS_LEVELS_MIN = 1;
@@ -23,8 +36,9 @@ const HOVER_DEBOUNCE_MS = 50; // 悬停去抖，避免快速划过时反复做 B
 const DIM_NODE_FACTOR = 0.18; // 非焦点节点：基准不透明度 × 0.18（半透明可见，不消失）
 const DIM_LINK_OPACITY = 0.05; // 非焦点边残留不透明度
 const DIM_LINK_DARKEN = 0.65; // 非焦点边颜色向黑压暗的比例
-const FOCUS_LINK_COLOR = "#9fe4ff"; // 被点亮父子边的高亮色（demo6 同款）
-const CORE_LINK_FOCUS_COLOR = "#63c9d8"; // 被点亮共现边的弱高亮色
+// 被点亮的边：跟随主题强调色/成功色（原先写死深色系青蓝，浅色主题下几乎不可见）
+const focusLinkColor = () => cssVar("--c-accent", "#4d7bd6");
+const coreLinkFocusColor = () => cssVar("--c-success", "#2fb6a6");
 const CONTAINER_FILL = 1.04; // 容器比节点包围盒略大，确保节点落在里面
 const CONTAINER_VOLUME_RES = 88; // 体素分辨率（最长轴格数）
 const CONTAINER_VOLUME_DILATE = 1; // 壳膨胀层数（闭合脑面小孔）
@@ -60,10 +74,11 @@ const IMP_RANK = { important: 1, normal: 0.5, trivial: 0 };
 const IMP_OPACITY = { important: 0.95, normal: 0.82, trivial: 0.6 };
 const IMP_GLOW = { important: 1.6, normal: 1.0, trivial: 0.6 };
 
-const LINK_STYLE = {
-  parent: { color: "#4d7bd6", width: 1.25, opacity: 0.46 },
-  corecall: { color: "#2fb6a6", width: 0.7, opacity: 0.18 },
-};
+// 边的样式：颜色跟随主题令牌（每次调用现取，主题切换后重建即生效）
+const linkStyle = () => ({
+  parent: { color: cssVar("--c-accent", "#4d7bd6"), width: 1.25, opacity: 0.46 },
+  corecall: { color: cssVar("--c-success", "#2fb6a6"), width: 0.7, opacity: 0.18 },
+});
 
 const NODE_BASE_RADIUS = 3.4;
 const geomCache = new Map();
@@ -366,7 +381,7 @@ export class GraphView {
       controlType: "orbit",
       rendererConfig: { antialias: true, alpha: true },
     })
-      .backgroundColor("#080b12")
+      .backgroundColor(cssVar("--c-bg", "#080b12"))
       .showNavInfo(false)
       .nodeId("id")
       .enablePointerInteraction(false)
@@ -741,7 +756,8 @@ export class GraphView {
 
   _decorateLink(l) {
     const type = l.type || "parent";
-    const style = LINK_STYLE[type] || LINK_STYLE.parent;
+    const styles = linkStyle();
+    const style = styles[type] || styles.parent;
     const n = Number(l.n) || 1;
     const width =
       type === "corecall"
@@ -821,7 +837,7 @@ export class GraphView {
 
   _nodeObject(n) {
     const st = this._nodeStyle(n);
-    const baseColor = n.color || "#43e8ff";
+    const baseColor = n.color || cssVar("--c-accent", "#43e8ff");
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(baseColor),
       emissive: new THREE.Color(baseColor),
@@ -1070,10 +1086,10 @@ export class GraphView {
       if (lv <= this.levels) {
         const b = Math.pow(FOCUS_DECAY, lv);
         if (l.type === "parent") {
-          focusColor = FOCUS_LINK_COLOR;
+          focusColor = focusLinkColor();
           focusOpacity = 0.18 + 0.66 * b;
         } else {
-          focusColor = CORE_LINK_FOCUS_COLOR;
+          focusColor = coreLinkFocusColor();
           focusOpacity = 0.05 + 0.18 * b;
         }
       } else {
