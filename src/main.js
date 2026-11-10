@@ -113,6 +113,8 @@ const settingsPanel = $("#settings-panel");
 const settingsClose = $("#settings-close");
 const autostartSwitch = $("#autostart-switch");
 const autostartStatus = $("#autostart-status");
+const deskpetSwitch = $("#deskpet-switch");
+const deskpetStatus = $("#deskpet-status");
 const runtimeStart = $("#runtime-start");
 const runtimeCheckStatus = $("#runtime-check-status");
 const autoState = $("#auto-state");
@@ -2419,6 +2421,7 @@ function openSettingsPanel() {
   settingsPanel.classList.remove("hidden");
   // 每次打开都读系统真实状态（用户可能从任务管理器改过启动项）
   void loadAutostartStatus();
+  void loadDeskpetStatus();
 }
 
 async function loadAutostartStatus() {
@@ -2449,6 +2452,49 @@ async function toggleAutostart(enabled) {
   } finally {
     autostartBusy = false;
     if (autostartSwitch) autostartSwitch.disabled = false;
+  }
+}
+
+// ---- 设置：DeskPet 状态推送 ----
+// 开关写入 deskpet.json；开启后后端立即通过本机 MCP 推送一次状态。
+
+let deskpetBusy = false;
+
+function setDeskpetStatus(text, tone = "") {
+  if (!deskpetStatus) return;
+  deskpetStatus.textContent = text;
+  deskpetStatus.className = "settings-status" + (tone ? ` ${tone}` : "");
+}
+
+function renderDeskpetStatus(st) {
+  if (deskpetSwitch) deskpetSwitch.checked = !!st?.enabled;
+  setDeskpetStatus(st?.message || "", st?.enabled ? (st?.connected ? "ok" : "warn") : "");
+}
+
+async function loadDeskpetStatus() {
+  if (!window.__TAURI__?.core) return;
+  try {
+    renderDeskpetStatus(await invoke()("deskpet_status"));
+  } catch (e) {
+    if (deskpetSwitch) deskpetSwitch.checked = false;
+    setDeskpetStatus(`无法读取 DeskPet 推送状态：${String(e?.message || e)}`, "warn");
+  }
+}
+
+async function toggleDeskpet(enabled) {
+  if (deskpetBusy || !window.__TAURI__?.core) return;
+  deskpetBusy = true;
+  if (deskpetSwitch) deskpetSwitch.disabled = true;
+  setDeskpetStatus(enabled ? "正在连接 DeskPet…" : "正在关闭…");
+  try {
+    renderDeskpetStatus(await invoke()("deskpet_set_enabled", { enabled }));
+  } catch (e) {
+    // 失败时回读真实状态，避免开关停在未生效的位置
+    await loadDeskpetStatus();
+    setDeskpetStatus(String(e?.message || e), "warn");
+  } finally {
+    deskpetBusy = false;
+    if (deskpetSwitch) deskpetSwitch.disabled = false;
   }
 }
 
@@ -2755,6 +2801,9 @@ async function initSettingsPanel() {
   settingsClose?.addEventListener("click", closeSettingsPanel);
   autostartSwitch?.addEventListener("change", () => {
     void toggleAutostart(!!autostartSwitch.checked);
+  });
+  deskpetSwitch?.addEventListener("change", () => {
+    void toggleDeskpet(!!deskpetSwitch.checked);
   });
   runtimeStart?.addEventListener("click", ensureRuntimeNow);
   document.addEventListener("click", (e) => {

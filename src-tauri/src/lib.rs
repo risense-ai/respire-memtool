@@ -13,6 +13,8 @@ pub mod agent;
 pub mod agent_workspace;
 pub mod autostart;
 pub mod automation;
+pub mod deskpet;
+pub mod deskpet_settings;
 pub mod graph;
 pub mod graph_vectors;
 pub mod kb;
@@ -55,6 +57,8 @@ struct AppState {
     processor: Arc<processor_settings::ProcessorSettings>,
     /// 知识库入库 / AI 窗口（P13）
     kb: Arc<kb_service::KbService>,
+    /// DeskPet 状态推送（本机 MCP）；设置面板开关，默认关闭
+    deskpet: Arc<deskpet::DeskpetService>,
     /// 图谱放大/还原的窗口尺寸记忆（逻辑像素）
     graph_window: std::sync::Mutex<GraphWindowMemory>,
 }
@@ -643,6 +647,21 @@ fn runtime_status(state: tauri::State<'_, AppState>) -> RuntimeStatus {
             phase: None,
         },
     }
+}
+
+/// DeskPet 状态推送的当前开关与连接状态（只读）。
+#[tauri::command]
+fn deskpet_status(state: tauri::State<'_, AppState>) -> deskpet::DeskpetStatusOut {
+    state.deskpet.status()
+}
+
+/// 设置面板开关：持久化到 `deskpet.json`；开启时立即尝试推送一次。
+#[tauri::command]
+fn deskpet_set_enabled(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<deskpet::DeskpetStatusOut, String> {
+    state.deskpet.set_enabled(enabled)
 }
 
 #[tauri::command]
@@ -2467,6 +2486,10 @@ pub fn run() {
             let kb_settings = Arc::new(kb_settings::KbSettings::load(
                 config_dir.join("knowledge_base.json"),
             ));
+            // DeskPet 状态推送：设置面板开关存 deskpet.json，叠加 config.toml
+            let deskpet_settings = Arc::new(deskpet_settings::DeskpetSettings::load(
+                config_dir.join("deskpet.json"),
+            ));
             let client = Arc::new(RsrsClient::new(
                 default_config.rsrs.base_url.clone(),
                 default_config.rsrs.mcp_path.clone(),
@@ -2488,14 +2511,21 @@ pub fn run() {
                 default_config.processor.agent.clone(),
                 config_dir.clone(),
             ));
+            let deskpet = Arc::new(deskpet::DeskpetService::new(
+                default_config.deskpet.clone(),
+                deskpet_settings,
+                client.clone(),
+            ));
             app.manage(AppState {
                 config: default_config.clone(),
                 client: client.clone(),
                 targets: target_store.clone(),
                 processor: processor_settings.clone(),
                 kb: kb.clone(),
+                deskpet: deskpet.clone(),
                 graph_window: std::sync::Mutex::new(GraphWindowMemory::default()),
             });
+            deskpet.start();
             // 划词状态与图谱服务也先注册：下面要手动创建窗口，前端一加载就可能 invoke
             let selection_state = Arc::new(selection::SelectionState::new(
                 default_config.selection.enabled,
@@ -2703,6 +2733,8 @@ pub fn run() {
             extension_info,
             extension_install,
             runtime_status,
+            deskpet_status,
+            deskpet_set_enabled,
             hide_window,
             quit_app,
             selection_payload,
