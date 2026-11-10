@@ -452,6 +452,18 @@
       <div class="settings-divider"></div>
       <div class="settings-row">
         <div class="settings-row-text">
+          <span class="settings-label">DeskPet 状态推送</span>
+          <span class="settings-hint">通过本机 MCP 把 memTools 状态发到桌宠气泡；默认关闭。</span>
+        </div>
+        <label class="switch" title="DeskPet 状态推送">
+          <input type="checkbox" id="deskpet-switch" />
+          <span class="knob"></span>
+        </label>
+      </div>
+      <div class="settings-status" id="deskpet-status">读取中…</div>
+      <div class="settings-divider"></div>
+      <div class="settings-row">
+        <div class="settings-row-text">
           <span class="settings-label">rsrs runtime</span>
           <span class="settings-hint">开机自启时检查；离线时由 rsrs 自行拉起服务。</span>
         </div>

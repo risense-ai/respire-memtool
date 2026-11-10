@@ -29,6 +29,9 @@ pub struct AppConfig {
     /// 知识库入库 + AI 窗口（P13）；旧配置文件缺该段时用默认值
     #[serde(default)]
     pub knowledge_base: KnowledgeBaseConfig,
+    /// DeskPet 状态推送；旧配置文件缺该段时用默认值（关闭）
+    #[serde(default)]
+    pub deskpet: DeskpetConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,6 +191,36 @@ impl Default for ExtensionConfig {
             port: 17650,
             token: String::new(),
         }
+    }
+}
+
+/// DeskPet 状态推送：通过本机 DeskPet 的 MCP 端点，把 memTools 的运行状态
+/// 用 `pet_say` 显示到桌宠气泡。默认关闭，由设置面板开关覆盖（`deskpet.json`）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DeskpetConfig {
+    /// 是否启用状态推送
+    pub enabled: bool,
+    /// 状态检查间隔（秒）；状态变化时才推送，另每 600 秒心跳刷新一次
+    pub interval_secs: u64,
+    /// control.json 路径覆盖；空 = `%LOCALAPPDATA%\DeskPet\control.json`
+    pub control_file: String,
+}
+
+impl Default for DeskpetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: 60,
+            control_file: String::new(),
+        }
+    }
+}
+
+impl DeskpetConfig {
+    /// 实际检查间隔：至少 15 秒，避免高频探测。
+    pub fn effective_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.interval_secs.clamp(15, 3600))
     }
 }
 
@@ -764,6 +797,7 @@ impl AppConfig {
             processor: ProcessorConfig::default(),
             rsrs_cli: RsrsCliConfig::default(),
             knowledge_base: KnowledgeBaseConfig::default(),
+            deskpet: DeskpetConfig::default(),
         }
     }
 }
@@ -788,6 +822,36 @@ mod config_loading_tests {
             cfg.update.endpoint,
             "https://github.com/risense-ai/respire-memtool/releases/latest/download/update.json"
         );
+    }
+
+    #[test]
+    fn deskpet_push_is_opt_in_by_default() {
+        let cfg: AppConfig = toml::from_str(include_str!("../config.toml")).unwrap();
+        assert!(!cfg.deskpet.enabled, "DeskPet 推送必须默认关闭");
+        assert_eq!(cfg.deskpet.interval_secs, 60);
+        assert!(cfg.deskpet.control_file.is_empty());
+        assert_eq!(cfg.deskpet.effective_interval().as_secs(), 60);
+    }
+
+    #[test]
+    fn old_configuration_without_deskpet_section_still_loads() {
+        // 旧用户配置文件没有 [deskpet]；追加在模板末尾的段去掉后仍应可解析。
+        let without_deskpet = include_str!("../config.toml")
+            .split("\n# ---- DeskPet 状态推送 ----")
+            .next()
+            .unwrap();
+        let cfg: AppConfig = toml::from_str(without_deskpet).unwrap();
+        assert!(!cfg.deskpet.enabled);
+        assert_eq!(cfg.deskpet.effective_interval().as_secs(), 60);
+    }
+
+    #[test]
+    fn deskpet_interval_is_clamped_to_safe_bounds() {
+        let mut cfg = DeskpetConfig::default();
+        cfg.interval_secs = 1;
+        assert_eq!(cfg.effective_interval().as_secs(), 15);
+        cfg.interval_secs = 99_999;
+        assert_eq!(cfg.effective_interval().as_secs(), 3600);
     }
 
     struct ConfigFixture(std::path::PathBuf);

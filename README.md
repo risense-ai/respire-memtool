@@ -22,6 +22,7 @@ memTools 是一个基于 Tauri 2 的桌面快捷记录工具：用全局热键�
 - **浏览器扩展**：MV3 扩展把网页选中文字通过本机端点保存为日记或自动记录，正文附带来源标题和 URL。
 - **划词悬浮**（仅 Windows）：拖选或双击选词后先弹小图标，**此时不复制任何东西**；点图标才取词，可存为日记或带入主窗编辑。终端类窗口不注入取词，改为监听应用自身复制。过程中 `Ctrl+C` 的原有行为不受影响。
 - **同步状态**：底栏显示离线、待同步数量和冲突数量。
+- **DeskPet 状态推送**：设置里可选开启；memTools 通过本机 DeskPet 的 MCP 端点调用 `pet_say`，把 rsrs 在线 / 待同步 / 冲突 / 语义索引状态显示到桌宠气泡。默认关闭，只连 `127.0.0.1`。
 - **自动更新**：从 GitHub Releases 读取清单，下载并校验 SHA-256 后在 Windows 上自替换重启。
 - **rsrs 命令行安装 / 更新**：首次启动检测 `rsrs` 命令，缺失时自动用 npm / pnpm 全局安装官方 CLI，安装与更新进度显示在底栏「rsrs」面板；也可在面板手动检查更新。更新后会回查 registry 显示「已是最新」，运行中的 runtime 仍是旧二进制时，可在面板点「重启 rsrs」→「确认重启」由 memTools 代为重启。
 - **开机自启**：Windows 安装包在目录选择后提供勾选页（默认不勾选，重装时沿用已有设置）；也可在底栏「设置」里随时开关。自启启动时若 rsrs runtime 离线，会调用 `rsrs status` 让 rsrs 自行拉起，并只在托盘常驻，不弹出小窗。
@@ -133,6 +134,23 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run\memTools
 | `rsrs.tools.attach` | `memory_attach` | 调整父子关系 |
 | `rsrs.tools.list` | `memory_list` | 列出最近条目 |
 | `rsrs.tools.query_log_mark` | `memory_query_log_mark` | 标记召回候选的采纳情况 |
+
+### DeskPet 状态推送
+
+设置面板「DeskPet 状态推送」开启后，memTools 通过本机 DeskPet（大肥鱼）的
+MCP streamable-http 端点（默认 `http://127.0.0.1:17340/mcp`）调用 `pet_say`，
+把 rsrs 状态显示在桌宠气泡里。连接信息每次推送前从
+`%LOCALAPPDATA%\DeskPet\control.json` 重读（token 随桌宠启动轮换），只接受回环
+地址；DeskPet 未运行或开关关闭时静默跳过，不影响记忆读写。状态变化时推送，
+另每 600 秒心跳刷新一次。
+
+界面开关写入 `{app_config_dir}/deskpet.json`，叠加在 `config.toml` 之上并立即生效。
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `deskpet.enabled` | `false` | 是否启用状态推送（界面开关会覆盖） |
+| `deskpet.interval_secs` | `60` | 状态检查间隔（秒，15–3600）；仅状态变化时推送 |
+| `deskpet.control_file` | 空 | `control.json` 覆盖；空 = `%LOCALAPPDATA%\DeskPet\control.json` |
 
 ### rsrs CLI 安装与更新
 
